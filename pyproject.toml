@@ -26,3 +26,6 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/briney/somatic"
 Repository = "https://github.com/briney/somatic"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/somatic"]
