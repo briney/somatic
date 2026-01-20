@@ -1,6 +1,6 @@
 # somatic-lm
 
-A Python package for somatic language models.
+Antibody language models that learn the intrinsic patterns of somatic hypermutation.
 
 ## Installation
 
