@@ -24,5 +24,5 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/briney/somatic-lm"
-Repository = "https://github.com/briney/somatic-lm"
+Homepage = "https://github.com/briney/somatic"
+Repository = "https://github.com/briney/somatic"
