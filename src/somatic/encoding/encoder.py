@@ -303,6 +303,128 @@ class SomaticEncoder:
         }
 
     @torch.no_grad()
+    def log_likelihood(
+        self,
+        heavy_chain: str,
+        light_chain: str,
+    ) -> dict[str, Tensor]:
+        """Compute log-likelihood for antibody sequences.
+
+        Computes the sum of log probabilities for each token given the
+        model's predictions. Useful for scoring sequence quality or
+        comparing sequence variants.
+
+        Parameters
+        ----------
+        heavy_chain
+            Heavy chain amino acid sequence.
+        light_chain
+            Light chain amino acid sequence.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'log_likelihood': Total log-likelihood (scalar tensor)
+            - 'heavy_log_likelihood': Heavy chain log-likelihood (scalar tensor)
+            - 'light_log_likelihood': Light chain log-likelihood (scalar tensor)
+        """
+        batch = self._prepare_input(heavy_chain, light_chain)
+
+        outputs = self.model(
+            token_ids=batch["token_ids"],
+            chain_ids=batch["chain_ids"],
+            attention_mask=batch["attention_mask"],
+        )
+
+        logits = outputs["logits"][0]  # Remove batch dimension
+        token_ids = batch["token_ids"][0]
+        chain_ids = batch["chain_ids"][0]
+        attention_mask = batch["attention_mask"][0]
+
+        # Find chain boundaries (excluding CLS at start and EOS at end)
+        seq_len = int(attention_mask.sum().item())
+        logits = logits[:seq_len]
+        token_ids = token_ids[:seq_len]
+        chain_ids = chain_ids[:seq_len]
+
+        # Compute log probabilities
+        log_probs = torch.log_softmax(logits, dim=-1)
+
+        # Heavy chain: positions where chain_id == 0, excluding CLS (position 0)
+        heavy_mask = chain_ids == 0
+        heavy_mask[0] = False  # Exclude CLS
+        heavy_log_probs = log_probs[heavy_mask]
+        heavy_targets = token_ids[heavy_mask]
+        heavy_ll = (
+            heavy_log_probs.gather(dim=-1, index=heavy_targets.unsqueeze(-1))
+            .squeeze(-1)
+            .sum()
+        )
+
+        # Light chain: positions where chain_id == 1, excluding EOS (last position)
+        light_mask = chain_ids == 1
+        light_mask[seq_len - 1] = False  # Exclude EOS
+        light_log_probs = log_probs[light_mask]
+        light_targets = token_ids[light_mask]
+        light_ll = (
+            light_log_probs.gather(dim=-1, index=light_targets.unsqueeze(-1))
+            .squeeze(-1)
+            .sum()
+        )
+
+        total_ll = heavy_ll + light_ll
+
+        return {
+            "log_likelihood": total_ll,
+            "heavy_log_likelihood": heavy_ll,
+            "light_log_likelihood": light_ll,
+        }
+
+    @torch.no_grad()
+    def perplexity(
+        self,
+        heavy_chain: str,
+        light_chain: str,
+    ) -> dict[str, Tensor]:
+        """Compute perplexity for antibody sequences.
+
+        Perplexity is computed as exp(-log_likelihood / num_tokens).
+        Lower perplexity indicates the model assigns higher probability
+        to the sequence.
+
+        Parameters
+        ----------
+        heavy_chain
+            Heavy chain amino acid sequence.
+        light_chain
+            Light chain amino acid sequence.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'perplexity': Combined perplexity (scalar tensor)
+            - 'heavy_perplexity': Heavy chain perplexity (scalar tensor)
+            - 'light_perplexity': Light chain perplexity (scalar tensor)
+        """
+        ll_result = self.log_likelihood(heavy_chain, light_chain)
+
+        heavy_len = len(heavy_chain)
+        light_len = len(light_chain)
+        total_len = heavy_len + light_len
+
+        heavy_ppl = torch.exp(-ll_result["heavy_log_likelihood"] / heavy_len)
+        light_ppl = torch.exp(-ll_result["light_log_likelihood"] / light_len)
+        total_ppl = torch.exp(-ll_result["log_likelihood"] / total_len)
+
+        return {
+            "perplexity": total_ppl,
+            "heavy_perplexity": heavy_ppl,
+            "light_perplexity": light_ppl,
+        }
+
+    @torch.no_grad()
     def predict(
         self,
         heavy_chain: str,
