@@ -27,11 +27,8 @@ classifiers = [
 somatic = "somatic.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/briney/somatic-lm"
-Repository = "https://github.com/briney/somatic-lm"
+Homepage = "https://github.com/briney/somatic"
+Repository = "https://github.com/briney/somatic"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/somatic"]
-
-[tool.hatch.version]
-path = "src/somatic/version.py"
