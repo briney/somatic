@@ -2,7 +2,7 @@
 
 **Antibody language models that learn the intrinsic patterns of somatic hypermutation.**
 
-Somatic is designed to overcome the germline bias problem in antibody language models by using an information-weighted masked language modeling objective. The model features chain-aware attention to jointly reason over paired heavy and light chain sequences.
+Somatic is designed to overcome the [germline bias problem](https://academic.oup.com/bioinformatics/article/40/11/btae618/7845256) in antibody language models by using an information-weighted masked language modeling objective that [preferentially masks](https://www.cell.com/patterns/fulltext/S2666-3899(25)00087-X) high-value sequence positions. The model features chain-aware attention to jointly reason over paired heavy and light chain sequences.
 
 ## Installation
 
