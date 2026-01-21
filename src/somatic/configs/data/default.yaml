@@ -1,0 +1,81 @@
+# Training data configuration
+# Supports two formats:
+#
+# Single dataset (100% sampling):
+#   train: /path/to/train.parquet
+#
+# Multiple datasets with weighted sampling:
+#   train:
+#     dataset_a:
+#       path: /path/to/dataset_a.parquet
+#       fraction: 0.6
+#     dataset_b:
+#       path: /path/to/dataset_b.parquet
+#       fraction: 0.4
+#
+# Fraction handling:
+#   - Fractions normalize to sum to 1.0
+#   - Unspecified fractions share remaining mass equally
+#   - If no fractions specified, all datasets get equal weight
+#
+# CLI usage:
+#   Single dataset: data.train=/path/to/train.parquet
+#   Multi-dataset: +data.train.dataset_a.path=... +data.train.dataset_a.fraction=...
+train: null
+
+# Evaluation datasets configuration
+# Supports two formats:
+#
+# Single dataset:
+#   eval: /path/to/eval.parquet
+#
+# Multiple datasets with optional per-dataset configuration:
+#   eval:
+#     validation: /path/to/val.parquet
+#     test: /path/to/test.parquet
+#
+#   eval:
+#     validation:
+#       path: /path/to/val.parquet
+#       batch_size: 32
+#       load_coords: true
+#
+#   eval:
+#     seq_val:
+#       path: /path/to/seq_val.parquet
+#       load_coords: false
+#       metrics:
+#         only: [masked_accuracy, perplexity]
+#
+#     struct_val:
+#       path: /path/to/struct_val.parquet
+#       load_coords: true
+#       metrics:
+#         only: [masked_accuracy, p_at_l]
+#         p_at_l:
+#           contact_threshold: 6.0
+#
+# CLI usage:
+#   Single dataset: data.eval=/path/to/eval.parquet
+#   Multi-dataset: +data.eval.validation=/path/to/val.parquet
+eval: null
+
+# Data loading settings
+max_length: 320
+num_workers: 4
+pin_memory: true
+drop_last: true
+pad_to_max: false
+
+# Column names
+heavy_col: "sequence_aa:0"
+light_col: "sequence_aa:1"
+heavy_cdr_col: "cdr_mask_aa:0"
+light_cdr_col: "cdr_mask_aa:1"
+heavy_nongermline_col: "nongermline_mask_aa:0"
+light_nongermline_col: "nongermline_mask_aa:1"
+
+# Coordinate loading (global default, can be overridden per eval dataset)
+load_coords: false
+heavy_coords_col: heavy_coords
+light_coords_col: light_coords

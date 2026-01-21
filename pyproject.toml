@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "somatic-lm"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A Python package for somatic language models"
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,15 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.scripts]
+somatic = "somatic.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/briney/somatic-lm"
 Repository = "https://github.com/briney/somatic-lm"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/somatic"]
+
+[tool.hatch.version]
+path = "src/somatic/version.py"

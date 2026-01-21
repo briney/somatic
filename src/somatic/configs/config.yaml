@@ -1,0 +1,12 @@
+defaults:
+  - model: base
+  - train: default
+  - data: default
+  - masking: default
+  - log: default
+  - eval: default
+  - _self_
+
+name: somatic_experiment
+seed: 42
+output_dir: outputs/${name}

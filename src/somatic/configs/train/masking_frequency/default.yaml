@@ -1,0 +1,31 @@
+# Masking frequency tracking configuration
+# Tracks which regions get masked during training and evaluation
+
+enabled: true  # Master switch
+
+# Individual CDR regions (6 total)
+hcdr1: false
+hcdr2: false
+hcdr3: true
+lcdr1: false
+lcdr2: false
+lcdr3: true
+
+# Individual framework regions (8 total)
+hfwr1: false
+hfwr2: false
+hfwr3: false
+hfwr4: false
+lfwr1: false
+lfwr2: false
+lfwr3: false
+lfwr4: false
+
+# Aggregate groups (7 total)
+all_cdr: true   # Combined stats for all 6 CDRs
+all_fwr: true   # Combined stats for all 8 frameworks
+heavy: true     # All heavy chain regions
+light: true     # All light chain regions
+overall: true   # Total masking statistics
+germline: true      # Germline positions (non_templated_mask == 0)
+nongermline: true   # Non-germline positions (non_templated_mask == 1)

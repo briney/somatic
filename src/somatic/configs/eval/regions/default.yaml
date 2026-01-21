@@ -1,0 +1,45 @@
+# Region-specific evaluation configuration
+# Enables detailed analysis of model performance across antibody regions
+
+# Master switch - enable region-specific evaluation
+enabled: true
+
+# Evaluation mode:
+# - "standard": Uses existing eval masking, computes metrics on masked positions in regions (fast)
+# - "per-position": Mask one position at a time, aggregate by region (most detailed, slow)
+# - "region-level": Mask entire regions at once (tests region reconstruction)
+mode: "per-position"
+
+# Batch size for per-position evaluation
+# Higher values = faster but more memory
+position_batch_size: 32
+
+# Individual CDR regions (6 total)
+# Enable to compute per-region metrics (accuracy, loss, perplexity)
+hcdr1: false
+hcdr2: false
+hcdr3: true
+lcdr1: false
+lcdr2: false
+lcdr3: true
+
+# Individual framework regions (8 total)
+# Usually tracked as aggregate only
+hfwr1: false
+hfwr2: false
+hfwr3: false
+hfwr4: false
+lfwr1: false
+lfwr2: false
+lfwr3: false
+lfwr4: false
+
+# Aggregate groups (7 total)
+# Combine multiple regions into summary statistics
+all_cdr: true    # Combined stats for all 6 CDRs
+all_fwr: true    # Combined stats for all 8 frameworks
+heavy: true      # All heavy chain regions
+light: true      # All light chain regions
+overall: false   # Total across all regions
+germline: true      # Germline positions (non_templated_mask == 0)
+nongermline: true   # Non-germline positions (non_templated_mask == 1)

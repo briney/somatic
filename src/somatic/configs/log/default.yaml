@@ -1,0 +1,7 @@
+wandb:
+  enabled: true
+  project: somatic
+  entity: null
+  name: ${name}
+  tags: []
+  notes: null

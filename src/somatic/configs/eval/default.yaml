@@ -1,0 +1,52 @@
+# Evaluation configuration
+# Controls which metrics are computed during training validation
+
+# Include sub-configs for masking and regions
+defaults:
+  - masking: default
+  - regions: default
+
+# Global metric settings (can be overridden per-dataset)
+metrics:
+  # Classification metrics (always available)
+  masked_accuracy:
+    enabled: true
+
+  perplexity:
+    enabled: true
+
+  loss:
+    enabled: true
+
+  # Contact prediction (requires coordinates)
+  p_at_l:
+    enabled: true
+    contact_threshold: 8.0      # Distance threshold in Angstroms
+    min_seq_sep: 6              # Minimum sequence separation
+    use_attention: true         # Use attention weights for prediction
+    attention_layer: "last"     # Layer selection: "last", "mean", or layer index
+    head_aggregation: "mean"    # How to aggregate heads: "mean", "max"
+    num_layers: null            # Number of layers to use (null = 10% of total)
+    use_logistic_regression: false  # Whether to train LogReg on attention
+    logreg_n_train: 20          # Sequences for LogReg training
+    logreg_lambda: 0.15         # L2 regularization
+
+  # Probe-based metrics
+  chain_probe:
+    enabled: false              # Disabled by default (requires sklearn)
+    pool_strategy: "mean"
+    n_train: 100
+    regularization: 0.1
+
+  position_probe:
+    enabled: false
+    n_bins: 3
+    sample_per_seq: 10
+    n_train: 100
+
+  cdr_probe:
+    enabled: false              # Requires CDR annotations in data
+    sample_per_seq: 20
+    n_train: 100
+
+  # Region-based metrics are now configured via eval.regions (see regions/default.yaml)

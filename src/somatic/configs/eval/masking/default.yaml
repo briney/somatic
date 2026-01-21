@@ -1,0 +1,26 @@
+# Evaluation masking configuration
+# Controls how sequences are masked during evaluation for reproducible comparisons
+
+# Masker type: "uniform" or "information_weighted"
+# - uniform: Random masking with equal probability for all valid positions
+# - information_weighted: Biased toward CDR and non-templated regions
+type: uniform
+
+# Mask rate (0.0-1.0)
+mask_rate: 0.15
+
+# Weight multipliers for information-weighted masking
+# Only used when type=information_weighted
+# Higher values = stronger preference for masking those positions
+cdr_weight_multiplier: 1.0         # Weight boost for CDR positions
+nongermline_weight_multiplier: 1.0  # Weight boost for nongermline positions
+
+# Selection method for information-weighted masking
+# Only used when type=information_weighted
+# - "ranked": Deterministic top-K selection
+# - "sampled": Probabilistic Gumbel-top-k sampling (recommended)
+selection_method: sampled
+
+# Random seed for reproducible masking
+# Same seed + same data = same masked positions
+seed: 42

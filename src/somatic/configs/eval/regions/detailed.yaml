@@ -1,0 +1,33 @@
+# Detailed region-specific evaluation
+# Tracks all CDRs individually + aggregates, FWRs as aggregate only
+
+enabled: true
+mode: "per-position"
+position_batch_size: 32
+
+# Individual CDR regions - all enabled for detailed analysis
+hcdr1: true
+hcdr2: true
+hcdr3: true
+lcdr1: true
+lcdr2: true
+lcdr3: true
+
+# Individual framework regions - disabled (use aggregate only)
+hfwr1: false
+hfwr2: false
+hfwr3: false
+hfwr4: false
+lfwr1: false
+lfwr2: false
+lfwr3: false
+lfwr4: false
+
+# Aggregate groups
+all_cdr: true    # Track combined CDR stats
+all_fwr: true    # Track combined FWR stats (since individuals disabled)
+heavy: false     # Per-chain aggregates disabled
+light: false
+overall: true    # Track overall statistics
+germline: true       # Track germline positions (non_templated_mask == 0)
+nongermline: true    # Track non-germline positions (non_templated_mask == 1)

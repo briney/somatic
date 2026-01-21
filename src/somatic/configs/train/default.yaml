@@ -1,0 +1,34 @@
+defaults:
+  - masking_frequency: default
+  - flops: default
+
+max_steps: 100000
+max_epochs: null
+
+batch_size: 32
+gradient_accumulation_steps: 1
+
+optimizer:
+  name: adamw
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+max_grad_norm: 1.0
+
+scheduler:
+  decay: linear  # linear | cosine
+  warmup_steps: 10000
+  min_lr_ratio: 0.0
+
+log_steps: 10
+eval_steps: 5000
+checkpoint_steps: 50000
+
+checkpoint_dir: ${output_dir}/checkpoints
+keep_last_n_checkpoints: 5
+save_best: true
+
+mixed_precision: "no"
+
+# masking_frequency is now composed from train/masking_frequency/default.yaml

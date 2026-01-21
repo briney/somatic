@@ -1,0 +1,48 @@
+vocab_size: 32
+padding_idx: 1
+
+# very deep (width:depth ratio = 4)
+# 512M parameters (411M if no chain-aware attention)
+d_model: 512
+n_layers: 128
+n_heads: 8
+d_ffn: null
+ffn_multiplier: null
+
+max_seq_len: 320
+
+dropout: 0.1
+attention_dropout: 0.1
+embedding_dropout: 0.1
+
+use_chain_aware_attention: true
+
+# Normalization options
+norm_type: layernorm  # "layernorm" or "rmsnorm"
+pre_norm: true
+post_norm: false
+qk_norm: none  # "none", "norm", or "learned_scale"
+layer_norm_eps: 1e-6
+
+
+#-------------------------------
+#    other configurations
+#-------------------------------
+
+# deep (width:depth ratio = 7.8)
+# 507M params (407M if no chain-aware attention)
+# d_model: 640
+# n_layers: 82
+# n_heads: 10
+
+# wide (width:depth ratio = 13.2)
+# 513M params (411M if no chain-aware attention)
+# d_model: 768
+# n_layers: 58
+# n_heads: 12
+
+# very wide (width:depth ratio = 32)
+# 506M params (405M if no chain-aware attention)
+# d_model: 1024
+# n_layers: 32
+# n_heads: 16
