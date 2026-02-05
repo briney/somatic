@@ -82,14 +82,13 @@ class MaskedAccuracyMetric(MetricBase):
             self._total = int(state[1].item())
 
 
-@register_metric("perplexity")
-class PerplexityMetric(MetricBase):
-    """Perplexity metric computed as exp(cross-entropy loss).
+class _MaskedCrossEntropyMetric(MetricBase):
+    """Base class for metrics computed from cross-entropy loss on masked positions.
 
-    Measures how well the model predicts masked tokens. Lower is better.
+    Accumulates total loss and token count across batches. Subclasses only
+    need to define ``name``, class variables, and ``compute()``.
     """
 
-    name: ClassVar[str] = "ppl"
     requires_coords: ClassVar[bool] = False
     needs_attentions: ClassVar[bool] = False
 
@@ -105,7 +104,7 @@ class PerplexityMetric(MetricBase):
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
-        """Accumulate loss for perplexity computation.
+        """Accumulate cross-entropy loss on masked positions.
 
         Args:
             outputs: Model outputs with "logits" key.
@@ -115,23 +114,46 @@ class PerplexityMetric(MetricBase):
         logits = outputs["logits"]
         targets = batch["token_ids"]
 
-        # Compute cross-entropy loss on masked positions
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)
         targets_flat = targets.view(-1)
         mask_flat = mask_labels.view(-1).bool()
 
-        # Get per-token loss
         loss_per_token = torch.nn.functional.cross_entropy(
             logits_flat, targets_flat, reduction="none"
         )
 
-        # Sum loss only on masked positions
         masked_loss = loss_per_token[mask_flat].sum()
         num_masked = mask_flat.sum()
 
         self._total_loss += masked_loss.item()
         self._total_tokens += num_masked.item()
+
+    def reset(self) -> None:
+        """Reset accumulated state."""
+        self._total_loss = 0.0
+        self._total_tokens = 0
+
+    def state_tensors(self) -> list[Tensor]:
+        """Return state as tensors for distributed aggregation."""
+        return [torch.tensor([self._total_loss, float(self._total_tokens)])]
+
+    def load_state_tensors(self, tensors: list[Tensor]) -> None:
+        """Load state from gathered tensors."""
+        if tensors and len(tensors) > 0:
+            state = tensors[0]
+            self._total_loss = state[0].item()
+            self._total_tokens = int(state[1].item())
+
+
+@register_metric("perplexity")
+class PerplexityMetric(_MaskedCrossEntropyMetric):
+    """Perplexity metric computed as exp(cross-entropy loss).
+
+    Measures how well the model predicts masked tokens. Lower is better.
+    """
+
+    name: ClassVar[str] = "ppl"
 
     def compute(self) -> dict[str, float]:
         """Compute perplexity from accumulated loss.
@@ -146,70 +168,15 @@ class PerplexityMetric(MetricBase):
         perplexity = torch.exp(torch.tensor(avg_loss)).item()
         return {self.name: perplexity}
 
-    def reset(self) -> None:
-        """Reset accumulated state."""
-        self._total_loss = 0.0
-        self._total_tokens = 0
-
-    def state_tensors(self) -> list[Tensor]:
-        """Return state as tensors for distributed aggregation."""
-        return [torch.tensor([self._total_loss, float(self._total_tokens)])]
-
-    def load_state_tensors(self, tensors: list[Tensor]) -> None:
-        """Load state from gathered tensors."""
-        if tensors and len(tensors) > 0:
-            state = tensors[0]
-            self._total_loss = state[0].item()
-            self._total_tokens = int(state[1].item())
-
 
 @register_metric("loss")
-class LossMetric(MetricBase):
+class LossMetric(_MaskedCrossEntropyMetric):
     """Average cross-entropy loss on masked tokens.
 
     This is the raw loss value without exponentiating.
     """
 
     name: ClassVar[str] = "loss"
-    requires_coords: ClassVar[bool] = False
-    needs_attentions: ClassVar[bool] = False
-
-    def __init__(self, **kwargs) -> None:
-        """Initialize the metric."""
-        super().__init__()
-        self._total_loss: float = 0.0
-        self._total_tokens: int = 0
-
-    def update(
-        self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
-        batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
-    ) -> None:
-        """Accumulate loss from a batch.
-
-        Args:
-            outputs: Model outputs with "logits" key.
-            batch: Input batch with "token_ids" (original tokens).
-            mask_labels: Binary mask indicating masked positions.
-        """
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-
-        batch_size, seq_len, vocab_size = logits.shape
-        logits_flat = logits.view(-1, vocab_size)
-        targets_flat = targets.view(-1)
-        mask_flat = mask_labels.view(-1).bool()
-
-        loss_per_token = torch.nn.functional.cross_entropy(
-            logits_flat, targets_flat, reduction="none"
-        )
-
-        masked_loss = loss_per_token[mask_flat].sum()
-        num_masked = mask_flat.sum()
-
-        self._total_loss += masked_loss.item()
-        self._total_tokens += num_masked.item()
 
     def compute(self) -> dict[str, float]:
         """Compute average loss.
@@ -220,19 +187,3 @@ class LossMetric(MetricBase):
         if self._total_tokens == 0:
             return {self.name: float("inf")}
         return {self.name: self._total_loss / self._total_tokens}
-
-    def reset(self) -> None:
-        """Reset accumulated state."""
-        self._total_loss = 0.0
-        self._total_tokens = 0
-
-    def state_tensors(self) -> list[Tensor]:
-        """Return state as tensors for distributed aggregation."""
-        return [torch.tensor([self._total_loss, float(self._total_tokens)])]
-
-    def load_state_tensors(self, tensors: list[Tensor]) -> None:
-        """Load state from gathered tensors."""
-        if tensors and len(tensors) > 0:
-            state = tensors[0]
-            self._total_loss = state[0].item()
-            self._total_tokens = int(state[1].item())

@@ -163,7 +163,129 @@ class RegionAccuracyMetric(MetricBase):
                 self._total[region_name] = int(values[i * 2 + 1].item())
 
 
-class RegionPerplexityMetric(MetricBase):
+class _RegionCrossEntropyMetric(MetricBase):
+    """Base class for per-region metrics computed from cross-entropy loss.
+
+    Accumulates total loss and token count per region across batches.
+    Subclasses only need to define ``name``, class variables, and ``compute()``.
+
+    Parameters
+    ----------
+    regions : list[str] | None
+        List of region names to evaluate. If None, evaluates all regions.
+    aggregate_by : str
+        How to aggregate results: "all", "cdr", "fwr", "chain", "region_type".
+    """
+
+    requires_coords: ClassVar[bool] = False
+    needs_attentions: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        regions: list[str] | None = None,
+        aggregate_by: str = "all",
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.aggregate_by = aggregate_by
+
+        if regions is not None:
+            self.regions = {AntibodyRegion(r) for r in regions}
+        else:
+            self.regions = set(AntibodyRegion)
+
+        self._total_loss: dict[str, float] = {}
+        self._total_tokens: dict[str, int] = {}
+        self._init_accumulators()
+
+    def _init_accumulators(self) -> None:
+        """Initialize accumulators for all tracked regions."""
+        self._total_loss = {}
+        self._total_tokens = {}
+
+        if self.aggregate_by == "all":
+            for region in self.regions:
+                self._total_loss[region.value] = 0.0
+                self._total_tokens[region.value] = 0
+        elif self.aggregate_by in ("cdr", "fwr"):
+            self._total_loss["cdr"] = 0.0
+            self._total_tokens["cdr"] = 0
+            self._total_loss["fwr"] = 0.0
+            self._total_tokens["fwr"] = 0
+        elif self.aggregate_by == "chain":
+            self._total_loss["heavy"] = 0.0
+            self._total_tokens["heavy"] = 0
+            self._total_loss["light"] = 0.0
+            self._total_tokens["light"] = 0
+        elif self.aggregate_by == "region_type":
+            for name in ["cdr1", "cdr2", "cdr3", "fw1", "fw2", "fw3", "fw4"]:
+                self._total_loss[name] = 0.0
+                self._total_tokens[name] = 0
+
+    def update(
+        self,
+        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        batch: dict[str, Tensor | None],
+        mask_labels: Tensor,
+    ) -> None:
+        """Accumulate loss per region from a batch."""
+        if batch.get("cdr_mask") is None:
+            return
+
+        logits = outputs["logits"]
+        targets = batch["token_ids"]
+
+        batch_size, seq_len, vocab_size = logits.shape
+        logits_flat = logits.view(-1, vocab_size)
+        targets_flat = targets.view(-1)
+
+        loss_per_token = torch.nn.functional.cross_entropy(
+            logits_flat, targets_flat, reduction="none"
+        ).view(batch_size, seq_len)
+
+        try:
+            region_masks = extract_region_masks(batch, self.regions)
+        except ValueError:
+            return
+
+        if self.aggregate_by != "all":
+            aggregated = aggregate_region_masks(region_masks, self.aggregate_by)
+        else:
+            aggregated = {r.value: m for r, m in region_masks.items()}
+
+        mask = mask_labels.bool()
+
+        for region_name, region_mask in aggregated.items():
+            combined_mask = mask & region_mask
+            region_loss = (loss_per_token * combined_mask.float()).sum().item()
+            region_tokens = combined_mask.sum().item()
+
+            if region_name in self._total_loss:
+                self._total_loss[region_name] += region_loss
+                self._total_tokens[region_name] += region_tokens
+
+    def reset(self) -> None:
+        """Reset accumulated state."""
+        self._init_accumulators()
+
+    def state_tensors(self) -> list[Tensor]:
+        """Return state as tensors for distributed aggregation."""
+        values = []
+        for region_name in sorted(self._total_loss.keys()):
+            values.extend([self._total_loss[region_name], float(self._total_tokens[region_name])])
+        return [torch.tensor(values)]
+
+    def load_state_tensors(self, tensors: list[Tensor]) -> None:
+        """Load state from gathered tensors."""
+        if tensors and len(tensors) > 0:
+            values = tensors[0]
+            sorted_keys = sorted(self._total_loss.keys())
+            for i, region_name in enumerate(sorted_keys):
+                self._total_loss[region_name] = values[i * 2].item()
+                self._total_tokens[region_name] = int(values[i * 2 + 1].item())
+
+
+class RegionPerplexityMetric(_RegionCrossEntropyMetric):
     """Per-region perplexity metric.
 
     Computes perplexity (exp of cross-entropy loss) separately for each
@@ -178,92 +300,6 @@ class RegionPerplexityMetric(MetricBase):
     """
 
     name: ClassVar[str] = "region_ppl"
-    requires_coords: ClassVar[bool] = False
-    needs_attentions: ClassVar[bool] = False
-
-    def __init__(
-        self,
-        regions: list[str] | None = None,
-        aggregate_by: str = "all",
-        **kwargs,
-    ) -> None:
-        super().__init__()
-        self.aggregate_by = aggregate_by
-
-        if regions is not None:
-            self.regions = {AntibodyRegion(r) for r in regions}
-        else:
-            self.regions = set(AntibodyRegion)
-
-        self._total_loss: dict[str, float] = {}
-        self._total_tokens: dict[str, int] = {}
-        self._init_accumulators()
-
-    def _init_accumulators(self) -> None:
-        """Initialize accumulators for all tracked regions."""
-        self._total_loss = {}
-        self._total_tokens = {}
-
-        if self.aggregate_by == "all":
-            for region in self.regions:
-                self._total_loss[region.value] = 0.0
-                self._total_tokens[region.value] = 0
-        elif self.aggregate_by in ("cdr", "fwr"):
-            self._total_loss["cdr"] = 0.0
-            self._total_tokens["cdr"] = 0
-            self._total_loss["fwr"] = 0.0
-            self._total_tokens["fwr"] = 0
-        elif self.aggregate_by == "chain":
-            self._total_loss["heavy"] = 0.0
-            self._total_tokens["heavy"] = 0
-            self._total_loss["light"] = 0.0
-            self._total_tokens["light"] = 0
-        elif self.aggregate_by == "region_type":
-            for name in ["cdr1", "cdr2", "cdr3", "fw1", "fw2", "fw3", "fw4"]:
-                self._total_loss[name] = 0.0
-                self._total_tokens[name] = 0
-
-    def update(
-        self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
-        batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
-    ) -> None:
-        """Accumulate loss per region from a batch."""
-        if batch.get("cdr_mask") is None:
-            return
-
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-
-        batch_size, seq_len, vocab_size = logits.shape
-        logits_flat = logits.view(-1, vocab_size)
-        targets_flat = targets.view(-1)
-
-        loss_per_token = torch.nn.functional.cross_entropy(
-            logits_flat, targets_flat, reduction="none"
-        ).view(batch_size, seq_len)
-
-        try:
-            region_masks = extract_region_masks(batch, self.regions)
-        except ValueError:
-            return
-
-        if self.aggregate_by != "all":
-            aggregated = aggregate_region_masks(region_masks, self.aggregate_by)
-        else:
-            aggregated = {r.value: m for r, m in region_masks.items()}
-
-        mask = mask_labels.bool()
-
-        for region_name, region_mask in aggregated.items():
-            combined_mask = mask & region_mask
-            region_loss = (loss_per_token * combined_mask.float()).sum().item()
-            region_tokens = combined_mask.sum().item()
-
-            if region_name in self._total_loss:
-                self._total_loss[region_name] += region_loss
-                self._total_tokens[region_name] += region_tokens
 
     def compute(self) -> dict[str, float]:
         """Compute per-region perplexity from accumulated loss."""
@@ -278,28 +314,8 @@ class RegionPerplexityMetric(MetricBase):
             results[f"{region_name}/ppl"] = ppl
         return results
 
-    def reset(self) -> None:
-        """Reset accumulated state."""
-        self._init_accumulators()
 
-    def state_tensors(self) -> list[Tensor]:
-        """Return state as tensors for distributed aggregation."""
-        values = []
-        for region_name in sorted(self._total_loss.keys()):
-            values.extend([self._total_loss[region_name], float(self._total_tokens[region_name])])
-        return [torch.tensor(values)]
-
-    def load_state_tensors(self, tensors: list[Tensor]) -> None:
-        """Load state from gathered tensors."""
-        if tensors and len(tensors) > 0:
-            values = tensors[0]
-            sorted_keys = sorted(self._total_loss.keys())
-            for i, region_name in enumerate(sorted_keys):
-                self._total_loss[region_name] = values[i * 2].item()
-                self._total_tokens[region_name] = int(values[i * 2 + 1].item())
-
-
-class RegionLossMetric(MetricBase):
+class RegionLossMetric(_RegionCrossEntropyMetric):
     """Per-region cross-entropy loss metric.
 
     Computes average cross-entropy loss separately for each antibody region.
@@ -313,92 +329,6 @@ class RegionLossMetric(MetricBase):
     """
 
     name: ClassVar[str] = "region_loss"
-    requires_coords: ClassVar[bool] = False
-    needs_attentions: ClassVar[bool] = False
-
-    def __init__(
-        self,
-        regions: list[str] | None = None,
-        aggregate_by: str = "all",
-        **kwargs,
-    ) -> None:
-        super().__init__()
-        self.aggregate_by = aggregate_by
-
-        if regions is not None:
-            self.regions = {AntibodyRegion(r) for r in regions}
-        else:
-            self.regions = set(AntibodyRegion)
-
-        self._total_loss: dict[str, float] = {}
-        self._total_tokens: dict[str, int] = {}
-        self._init_accumulators()
-
-    def _init_accumulators(self) -> None:
-        """Initialize accumulators for all tracked regions."""
-        self._total_loss = {}
-        self._total_tokens = {}
-
-        if self.aggregate_by == "all":
-            for region in self.regions:
-                self._total_loss[region.value] = 0.0
-                self._total_tokens[region.value] = 0
-        elif self.aggregate_by in ("cdr", "fwr"):
-            self._total_loss["cdr"] = 0.0
-            self._total_tokens["cdr"] = 0
-            self._total_loss["fwr"] = 0.0
-            self._total_tokens["fwr"] = 0
-        elif self.aggregate_by == "chain":
-            self._total_loss["heavy"] = 0.0
-            self._total_tokens["heavy"] = 0
-            self._total_loss["light"] = 0.0
-            self._total_tokens["light"] = 0
-        elif self.aggregate_by == "region_type":
-            for name in ["cdr1", "cdr2", "cdr3", "fw1", "fw2", "fw3", "fw4"]:
-                self._total_loss[name] = 0.0
-                self._total_tokens[name] = 0
-
-    def update(
-        self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
-        batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
-    ) -> None:
-        """Accumulate loss per region from a batch."""
-        if batch.get("cdr_mask") is None:
-            return
-
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-
-        batch_size, seq_len, vocab_size = logits.shape
-        logits_flat = logits.view(-1, vocab_size)
-        targets_flat = targets.view(-1)
-
-        loss_per_token = torch.nn.functional.cross_entropy(
-            logits_flat, targets_flat, reduction="none"
-        ).view(batch_size, seq_len)
-
-        try:
-            region_masks = extract_region_masks(batch, self.regions)
-        except ValueError:
-            return
-
-        if self.aggregate_by != "all":
-            aggregated = aggregate_region_masks(region_masks, self.aggregate_by)
-        else:
-            aggregated = {r.value: m for r, m in region_masks.items()}
-
-        mask = mask_labels.bool()
-
-        for region_name, region_mask in aggregated.items():
-            combined_mask = mask & region_mask
-            region_loss = (loss_per_token * combined_mask.float()).sum().item()
-            region_tokens = combined_mask.sum().item()
-
-            if region_name in self._total_loss:
-                self._total_loss[region_name] += region_loss
-                self._total_tokens[region_name] += region_tokens
 
     def compute(self) -> dict[str, float]:
         """Compute per-region average loss."""
@@ -408,23 +338,3 @@ class RegionLossMetric(MetricBase):
             avg_loss = self._total_loss[region_name] / tokens if tokens > 0 else float("inf")
             results[f"{region_name}/loss"] = avg_loss
         return results
-
-    def reset(self) -> None:
-        """Reset accumulated state."""
-        self._init_accumulators()
-
-    def state_tensors(self) -> list[Tensor]:
-        """Return state as tensors for distributed aggregation."""
-        values = []
-        for region_name in sorted(self._total_loss.keys()):
-            values.extend([self._total_loss[region_name], float(self._total_tokens[region_name])])
-        return [torch.tensor(values)]
-
-    def load_state_tensors(self, tensors: list[Tensor]) -> None:
-        """Load state from gathered tensors."""
-        if tensors and len(tensors) > 0:
-            values = tensors[0]
-            sorted_keys = sorted(self._total_loss.keys())
-            for i, region_name in enumerate(sorted_keys):
-                self._total_loss[region_name] = values[i * 2].item()
-                self._total_tokens[region_name] = int(values[i * 2 + 1].item())
