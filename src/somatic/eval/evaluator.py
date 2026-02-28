@@ -13,6 +13,7 @@ from .base import Metric
 from .masking import EvalMasker, create_eval_masker
 from .region_config import RegionEvalConfig, build_region_eval_config
 from .region_eval import (
+    _get_model_device,
     run_per_position_eval,
     run_region_level_eval,
     run_standard_eval,
@@ -25,21 +26,6 @@ if TYPE_CHECKING:
     from omegaconf import DictConfig
 
     from ..model import SomaticModel
-
-
-def _get_model_device(model: "SomaticModel", accelerator: "Accelerator | None") -> torch.device:
-    """Get the device the model is on.
-
-    Args:
-        model: The model to check.
-        accelerator: Optional Accelerator instance.
-
-    Returns:
-        The device the model parameters are on.
-    """
-    if accelerator is not None:
-        return accelerator.device
-    return next(model.parameters()).device
 
 
 class Evaluator:

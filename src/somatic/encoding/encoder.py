@@ -244,6 +244,58 @@ class SomaticEncoder:
             return dim * 2
         return dim
 
+    def _forward_and_split(
+        self,
+        heavy_chain: str,
+        light_chain: str,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Run model forward pass and split outputs by chain.
+
+        Returns logits, token_ids, heavy_mask, and light_mask for the
+        sequence region (excluding CLS/EOS).
+
+        Parameters
+        ----------
+        heavy_chain
+            Heavy chain amino acid sequence.
+        light_chain
+            Light chain amino acid sequence.
+
+        Returns
+        -------
+        tuple
+            (logits, token_ids, heavy_mask, light_mask) where masks are
+            boolean tensors over the trimmed sequence.
+        """
+        batch = self._prepare_input(heavy_chain, light_chain)
+
+        outputs = self.model(
+            token_ids=batch["token_ids"],
+            chain_ids=batch["chain_ids"],
+            attention_mask=batch["attention_mask"],
+        )
+
+        logits = outputs["logits"][0]  # Remove batch dimension
+        token_ids = batch["token_ids"][0]
+        chain_ids = batch["chain_ids"][0]
+        attention_mask = batch["attention_mask"][0]
+
+        # Trim to actual sequence length (excluding padding)
+        seq_len = int(attention_mask.sum().item())
+        logits = logits[:seq_len]
+        token_ids = token_ids[:seq_len]
+        chain_ids = chain_ids[:seq_len]
+
+        # Heavy chain: positions where chain_id == 0, excluding CLS (position 0)
+        heavy_mask = chain_ids == 0
+        heavy_mask[0] = False  # Exclude CLS
+
+        # Light chain: positions where chain_id == 1, excluding EOS (last position)
+        light_mask = chain_ids == 1
+        light_mask[seq_len - 1] = False  # Exclude EOS
+
+        return logits, token_ids, heavy_mask, light_mask
+
     @torch.no_grad()
     def get_logits(
         self,
@@ -269,37 +321,12 @@ class SomaticEncoder:
             - 'heavy_logits': Heavy chain logits (heavy_len, vocab_size)
             - 'light_logits': Light chain logits (light_len, vocab_size)
         """
-        batch = self._prepare_input(heavy_chain, light_chain)
-
-        outputs = self.model(
-            token_ids=batch["token_ids"],
-            chain_ids=batch["chain_ids"],
-            attention_mask=batch["attention_mask"],
-        )
-
-        logits = outputs["logits"][0]  # Remove batch dimension
-        chain_ids = batch["chain_ids"][0]
-        attention_mask = batch["attention_mask"][0]
-
-        # Find chain boundaries (excluding CLS at start and EOS at end)
-        seq_len = int(attention_mask.sum().item())
-        logits = logits[:seq_len]
-        chain_ids = chain_ids[:seq_len]
-
-        # Heavy chain: positions where chain_id == 0, excluding CLS (position 0)
-        heavy_mask = (chain_ids == 0)
-        heavy_mask[0] = False  # Exclude CLS
-        heavy_logits = logits[heavy_mask]
-
-        # Light chain: positions where chain_id == 1, excluding EOS (last position)
-        light_mask = (chain_ids == 1)
-        light_mask[seq_len - 1] = False  # Exclude EOS
-        light_logits = logits[light_mask]
+        logits, _, heavy_mask, light_mask = self._forward_and_split(heavy_chain, light_chain)
 
         return {
             "logits": logits,
-            "heavy_logits": heavy_logits,
-            "light_logits": light_logits,
+            "heavy_logits": logits[heavy_mask],
+            "light_logits": logits[light_mask],
         }
 
     @torch.no_grad()
@@ -329,54 +356,22 @@ class SomaticEncoder:
             - 'heavy_log_likelihood': Heavy chain log-likelihood (scalar tensor)
             - 'light_log_likelihood': Light chain log-likelihood (scalar tensor)
         """
-        batch = self._prepare_input(heavy_chain, light_chain)
-
-        outputs = self.model(
-            token_ids=batch["token_ids"],
-            chain_ids=batch["chain_ids"],
-            attention_mask=batch["attention_mask"],
+        logits, token_ids, heavy_mask, light_mask = self._forward_and_split(
+            heavy_chain, light_chain
         )
 
-        logits = outputs["logits"][0]  # Remove batch dimension
-        token_ids = batch["token_ids"][0]
-        chain_ids = batch["chain_ids"][0]
-        attention_mask = batch["attention_mask"][0]
-
-        # Find chain boundaries (excluding CLS at start and EOS at end)
-        seq_len = int(attention_mask.sum().item())
-        logits = logits[:seq_len]
-        token_ids = token_ids[:seq_len]
-        chain_ids = chain_ids[:seq_len]
-
-        # Compute log probabilities
         log_probs = torch.log_softmax(logits, dim=-1)
 
-        # Heavy chain: positions where chain_id == 0, excluding CLS (position 0)
-        heavy_mask = chain_ids == 0
-        heavy_mask[0] = False  # Exclude CLS
-        heavy_log_probs = log_probs[heavy_mask]
-        heavy_targets = token_ids[heavy_mask]
-        heavy_ll = (
-            heavy_log_probs.gather(dim=-1, index=heavy_targets.unsqueeze(-1))
-            .squeeze(-1)
-            .sum()
-        )
+        def _chain_ll(mask: Tensor) -> Tensor:
+            chain_log_probs = log_probs[mask]
+            targets = token_ids[mask]
+            return chain_log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1).sum()
 
-        # Light chain: positions where chain_id == 1, excluding EOS (last position)
-        light_mask = chain_ids == 1
-        light_mask[seq_len - 1] = False  # Exclude EOS
-        light_log_probs = log_probs[light_mask]
-        light_targets = token_ids[light_mask]
-        light_ll = (
-            light_log_probs.gather(dim=-1, index=light_targets.unsqueeze(-1))
-            .squeeze(-1)
-            .sum()
-        )
-
-        total_ll = heavy_ll + light_ll
+        heavy_ll = _chain_ll(heavy_mask)
+        light_ll = _chain_ll(light_mask)
 
         return {
-            "log_likelihood": total_ll,
+            "log_likelihood": heavy_ll + light_ll,
             "heavy_log_likelihood": heavy_ll,
             "light_log_likelihood": light_ll,
         }

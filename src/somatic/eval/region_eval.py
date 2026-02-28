@@ -6,6 +6,7 @@ region-level) plus shared helpers extracted from Evaluator.
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -67,7 +68,7 @@ def _compute_individual_region_results(
             results[f"{region_name}/accuracy"] = acc["correct"] / acc["count"]
             results[f"{region_name}/loss"] = avg_loss
             results[f"{region_name}/prob"] = acc["total_prob"] / acc["count"]
-            results[f"{region_name}/ppl"] = torch.exp(torch.tensor(avg_loss)).item()
+            results[f"{region_name}/ppl"] = math.exp(avg_loss)
     return results
 
 
@@ -76,6 +77,77 @@ def _get_model_device(model: "SomaticModel", accelerator: "Accelerator | None") 
     if accelerator is not None:
         return accelerator.device
     return next(model.parameters()).device
+
+
+def _accumulate_positions(
+    region_accumulators: dict[str, dict[str, float]],
+    key: str,
+    positions: list[int],
+    per_position_results: dict[int, dict[str, float]],
+) -> None:
+    """Accumulate per-position metrics into a named region accumulator."""
+    if not positions:
+        return
+    if key not in region_accumulators:
+        region_accumulators[key] = _make_accumulator()
+    acc = region_accumulators[key]
+    for pos in positions:
+        if pos in per_position_results:
+            metrics = per_position_results[pos]
+            acc["correct"] += metrics["correct"]
+            acc["total_loss"] += metrics["loss"]
+            acc["total_prob"] += metrics["prob"]
+            acc["count"] += 1
+
+
+def _evaluate_masked_group(
+    model: "SomaticModel",
+    token_ids: torch.Tensor,
+    group_mask: torch.Tensor,
+    chain_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    device: torch.device,
+) -> dict[str, float]:
+    """Mask a group of positions and compute aggregate metrics.
+
+    Args:
+        model: The model to evaluate.
+        token_ids: Token IDs for a single sample (1-D).
+        group_mask: Boolean mask of positions to mask and evaluate (1-D).
+        chain_ids: Chain IDs for the sample (1-D).
+        attention_mask: Attention mask for the sample (1-D).
+        device: Device for tensor creation.
+
+    Returns:
+        Dict with correct, total_loss, total_prob, count.
+    """
+    from ..tokenizer import tokenizer
+
+    masked_ids = token_ids.clone()
+    masked_ids[group_mask] = tokenizer.mask_token_id
+
+    outputs = model(
+        token_ids=masked_ids.unsqueeze(0),
+        chain_ids=chain_ids.unsqueeze(0),
+        attention_mask=attention_mask.unsqueeze(0),
+    )
+    logits = outputs["logits"][0]
+
+    pos_indices = group_mask.nonzero(as_tuple=True)[0]
+    pos_logits = logits[pos_indices]
+    targets = token_ids[pos_indices]
+
+    losses = torch.nn.functional.cross_entropy(pos_logits, targets, reduction="none")
+    probs = torch.softmax(pos_logits, dim=-1)
+    target_probs = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+    preds = pos_logits.argmax(dim=-1)
+
+    return {
+        "correct": (preds == targets).sum().item(),
+        "total_loss": losses.sum().item(),
+        "total_prob": target_probs.sum().item(),
+        "count": len(pos_indices),
+    }
 
 
 def get_regions_for_aggregates(config: RegionEvalConfig) -> set[AntibodyRegion]:
@@ -130,7 +202,7 @@ def compute_aggregate_metrics(
             f"{prefix}/accuracy": acc["correct"] / acc["count"],
             f"{prefix}/loss": avg_loss,
             f"{prefix}/prob": acc["total_prob"] / acc["count"],
-            f"{prefix}/ppl": torch.exp(torch.tensor(avg_loss)).item(),
+            f"{prefix}/ppl": math.exp(avg_loss),
         }
 
     def _aggregate_regions(
@@ -224,6 +296,9 @@ def run_standard_eval(
     if eval_masker is not None:
         generator = eval_masker.get_generator(device)
 
+    enabled_aggs = config.get_enabled_aggregates()
+    warned_missing_mask = False
+
     model.eval()
     with torch.no_grad():
         for batch in tqdm(
@@ -305,11 +380,13 @@ def run_standard_eval(
                 acc["count"] += region_total
 
             # Handle germline/nongermline aggregates (position-based, not region-based)
-            enabled_aggs = config.get_enabled_aggregates()
             non_templated_mask = batch.get("non_templated_mask")
             if non_templated_mask is None:
-                if "germline" in enabled_aggs or "nongermline" in enabled_aggs:
+                if not warned_missing_mask and (
+                    "germline" in enabled_aggs or "nongermline" in enabled_aggs
+                ):
                     warnings.warn(_GERMLINE_WARNING)
+                    warned_missing_mask = True
             if non_templated_mask is not None:
                 if "germline" in enabled_aggs:
                     if "germline" not in region_accumulators:
@@ -480,44 +557,17 @@ def run_per_position_eval(
 
                 # 4. Aggregate by region
                 for region_name, positions in region_positions.items():
-                    if not positions:
-                        continue
-                    if region_name not in region_accumulators:
-                        region_accumulators[region_name] = _make_accumulator()
-                    acc = region_accumulators[region_name]
-                    for pos in positions:
-                        if pos in per_position_results:
-                            metrics = per_position_results[pos]
-                            acc["correct"] += metrics["correct"]
-                            acc["total_loss"] += metrics["loss"]
-                            acc["total_prob"] += metrics["prob"]
-                            acc["count"] += 1
+                    _accumulate_positions(
+                        region_accumulators, region_name, positions, per_position_results
+                    )
 
-                # 5. Aggregate by germline
-                if germline_positions:
-                    if "germline" not in region_accumulators:
-                        region_accumulators["germline"] = _make_accumulator()
-                    acc = region_accumulators["germline"]
-                    for pos in germline_positions:
-                        if pos in per_position_results:
-                            metrics = per_position_results[pos]
-                            acc["correct"] += metrics["correct"]
-                            acc["total_loss"] += metrics["loss"]
-                            acc["total_prob"] += metrics["prob"]
-                            acc["count"] += 1
-
-                # 6. Aggregate by nongermline
-                if nongermline_positions:
-                    if "nongermline" not in region_accumulators:
-                        region_accumulators["nongermline"] = _make_accumulator()
-                    acc = region_accumulators["nongermline"]
-                    for pos in nongermline_positions:
-                        if pos in per_position_results:
-                            metrics = per_position_results[pos]
-                            acc["correct"] += metrics["correct"]
-                            acc["total_loss"] += metrics["loss"]
-                            acc["total_prob"] += metrics["prob"]
-                            acc["count"] += 1
+                # 5. Aggregate by germline/nongermline
+                _accumulate_positions(
+                    region_accumulators, "germline", germline_positions, per_position_results
+                )
+                _accumulate_positions(
+                    region_accumulators, "nongermline", nongermline_positions, per_position_results
+                )
 
     # Compute final metrics
     results = _compute_individual_region_results(region_accumulators, config)
@@ -624,81 +674,32 @@ def run_region_level_eval(
                         if special_tokens_mask is not None:
                             valid_mask = valid_mask & ~special_tokens_mask.bool()
 
-                        # Evaluate germline positions (mask all at once)
-                        if needs_germline:
-                            germline_mask = (non_templated == 0) & valid_mask
-                            positions = germline_mask.nonzero(as_tuple=True)[0].tolist()
-
-                            if positions:
-                                try:
-                                    from ..tokenizer import tokenizer
-
-                                    masked_ids = token_ids.clone()
-                                    masked_ids[germline_mask] = tokenizer.mask_token_id
-
-                                    outputs = model(
-                                        token_ids=masked_ids.unsqueeze(0),
-                                        chain_ids=chain_ids.unsqueeze(0),
-                                        attention_mask=attention_mask.unsqueeze(0),
-                                    )
-                                    logits = outputs["logits"][0]
-
-                                    if "germline" not in region_accumulators:
-                                        region_accumulators["germline"] = _make_accumulator()
-                                    acc = region_accumulators["germline"]
-                                    for pos in positions:
-                                        pos_logits = logits[pos]
-                                        target = token_ids[pos].item()
-                                        pred = pos_logits.argmax().item()
-                                        acc["correct"] += 1 if pred == target else 0
-                                        loss = torch.nn.functional.cross_entropy(
-                                            pos_logits.unsqueeze(0),
-                                            torch.tensor([target], device=device),
-                                        ).item()
-                                        acc["total_loss"] += loss
-                                        probs_t = torch.softmax(pos_logits, dim=-1)
-                                        acc["total_prob"] += probs_t[target].item()
-                                        acc["count"] += 1
-                                except Exception as e:
-                                    warnings.warn(f"Germline evaluation failed: {e}")
-
-                        # Evaluate nongermline positions (mask all at once)
-                        if needs_nongermline:
-                            nongermline_mask = (non_templated == 1) & valid_mask
-                            positions = nongermline_mask.nonzero(as_tuple=True)[0].tolist()
-
-                            if positions:
-                                try:
-                                    from ..tokenizer import tokenizer
-
-                                    masked_ids = token_ids.clone()
-                                    masked_ids[nongermline_mask] = tokenizer.mask_token_id
-
-                                    outputs = model(
-                                        token_ids=masked_ids.unsqueeze(0),
-                                        chain_ids=chain_ids.unsqueeze(0),
-                                        attention_mask=attention_mask.unsqueeze(0),
-                                    )
-                                    logits = outputs["logits"][0]
-
-                                    if "nongermline" not in region_accumulators:
-                                        region_accumulators["nongermline"] = _make_accumulator()
-                                    acc = region_accumulators["nongermline"]
-                                    for pos in positions:
-                                        pos_logits = logits[pos]
-                                        target = token_ids[pos].item()
-                                        pred = pos_logits.argmax().item()
-                                        acc["correct"] += 1 if pred == target else 0
-                                        loss = torch.nn.functional.cross_entropy(
-                                            pos_logits.unsqueeze(0),
-                                            torch.tensor([target], device=device),
-                                        ).item()
-                                        acc["total_loss"] += loss
-                                        probs_t = torch.softmax(pos_logits, dim=-1)
-                                        acc["total_prob"] += probs_t[target].item()
-                                        acc["count"] += 1
-                                except Exception as e:
-                                    warnings.warn(f"Nongermline evaluation failed: {e}")
+                        for group_name, group_flag in (
+                            ("germline", needs_germline),
+                            ("nongermline", needs_nongermline),
+                        ):
+                            if not group_flag:
+                                continue
+                            group_mask = (
+                                (non_templated == (0 if group_name == "germline" else 1))
+                                & valid_mask
+                            )
+                            if not group_mask.any():
+                                continue
+                            try:
+                                result = _evaluate_masked_group(
+                                    model, token_ids, group_mask,
+                                    chain_ids, attention_mask, device,
+                                )
+                                if group_name not in region_accumulators:
+                                    region_accumulators[group_name] = _make_accumulator()
+                                acc = region_accumulators[group_name]
+                                acc["correct"] += result["correct"]
+                                acc["total_loss"] += result["total_loss"]
+                                acc["total_prob"] += result["total_prob"]
+                                acc["count"] += result["count"]
+                            except Exception as e:
+                                warnings.warn(f"{group_name.title()} evaluation failed: {e}")
 
     # Compute final metrics
     results = _compute_individual_region_results(region_accumulators, config)
