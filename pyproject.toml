@@ -30,5 +30,8 @@ somatic = "somatic.cli:main"
 Homepage = "https://github.com/briney/somatic"
 Repository = "https://github.com/briney/somatic"
 
+[tool.hatch.version]
+path = "src/somatic/version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/somatic"]
