@@ -33,6 +33,7 @@ class BaseAttention(nn.Module):
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
         hybrid_norm: bool = False,
+        rope_fraction: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -47,8 +48,10 @@ class BaseAttention(nn.Module):
         # Output projection (shared by all attention types)
         self.out_proj = nn.Linear(self.inner_dim, d_model, bias=bias)
 
-        # RoPE
-        self.rope = RotaryPositionEmbedding(head_dim, max_seq_len=max_seq_len)
+        # RoPE (with optional partial rotation; fraction=1.0 = full RoPE)
+        self.rope = RotaryPositionEmbedding(
+            head_dim, max_seq_len=max_seq_len, fraction=rope_fraction
+        )
 
         self.dropout = nn.Dropout(dropout)
 
@@ -121,10 +124,12 @@ class MultiHeadAttention(BaseAttention):
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
         hybrid_norm: bool = False,
+        rope_fraction: float = 1.0,
     ) -> None:
         super().__init__(
             d_model, n_heads, head_dim, dropout, bias, max_seq_len,
             qk_norm, norm_type, layer_norm_eps, hybrid_norm,
+            rope_fraction=rope_fraction,
         )
 
         # QKV projections
@@ -250,12 +255,14 @@ class ChainAwareAttention(BaseAttention):
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
         hybrid_norm: bool = False,
+        rope_fraction: float = 1.0,
     ) -> None:
         # Don't pass qk_norm to base class - we handle it separately for self/cross paths
         super().__init__(
             d_model, n_heads, head_dim, dropout, bias, max_seq_len,
             qk_norm="none", norm_type=norm_type, layer_norm_eps=layer_norm_eps,
             hybrid_norm=hybrid_norm,
+            rope_fraction=rope_fraction,
         )
 
         # Self-attention projections (RoPE will be applied to Q and K)

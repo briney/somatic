@@ -19,6 +19,10 @@ class RotaryPositionEmbedding(nn.Module):
         dim: Dimension of each attention head (must be even)
         max_seq_len: Maximum sequence length to precompute
         base: Base for the geometric progression of frequencies
+        fraction: Fraction of `dim` to rotate. 1.0 = full RoPE, 0.0 = NoPE,
+            values in between = partial RoPE (rotates the first
+            `int(dim * fraction)` rounded down to even, leaves the rest
+            un-rotated).
     """
 
     def __init__(
@@ -26,20 +30,34 @@ class RotaryPositionEmbedding(nn.Module):
         dim: int,
         max_seq_len: int = 512,
         base: float = 10000.0,
+        fraction: float = 1.0,
     ) -> None:
         super().__init__()
         assert dim % 2 == 0, f"RoPE dimension must be even, got {dim}"
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError(f"RoPE fraction must be in [0.0, 1.0], got {fraction}")
 
         self.dim = dim
         self.max_seq_len = max_seq_len
         self.base = base
+        self.fraction = fraction
 
-        # Precompute frequency bands
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # Round down to nearest even — _rotate_half uses chunk(2) which needs
+        # an even-sized last dimension.
+        rotated_dim = int(dim * fraction)
+        rotated_dim -= rotated_dim % 2
+        self.rotated_dim = rotated_dim
 
-        # Precompute sin/cos cache
-        self._build_cache(max_seq_len)
+        if rotated_dim == 0:
+            # NoPE: no cache needed, forward returns inputs unchanged.
+            self.register_buffer("inv_freq", torch.zeros(0), persistent=False)
+        else:
+            # Precompute frequency bands sized to rotated_dim.
+            inv_freq = 1.0 / (
+                base ** (torch.arange(0, rotated_dim, 2).float() / rotated_dim)
+            )
+            self.register_buffer("inv_freq", inv_freq, persistent=False)
+            self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
         """Build sin/cos cache for given sequence length."""
@@ -75,6 +93,10 @@ class RotaryPositionEmbedding(nn.Module):
         Returns:
             Tuple of rotated (query, key) tensors
         """
+        # NoPE fast path
+        if self.rotated_dim == 0:
+            return q, k
+
         seq_len = q.shape[2]
 
         if seq_len > self.max_seq_len:
@@ -90,7 +112,15 @@ class RotaryPositionEmbedding(nn.Module):
             cos = cos[position_ids].unsqueeze(1)
             sin = sin[position_ids].unsqueeze(1)
 
-        q_embed = (q * cos) + (self._rotate_half(q) * sin)
-        k_embed = (k * cos) + (self._rotate_half(k) * sin)
+        # Partial rotation. When rotated_dim == dim (full RoPE), q_pass/k_pass
+        # are zero-width and the concat is a no-op.
+        q_rot, q_pass = q[..., : self.rotated_dim], q[..., self.rotated_dim :]
+        k_rot, k_pass = k[..., : self.rotated_dim], k[..., self.rotated_dim :]
 
-        return q_embed, k_embed
+        q_rot = (q_rot * cos) + (self._rotate_half(q_rot) * sin)
+        k_rot = (k_rot * cos) + (self._rotate_half(k_rot) * sin)
+
+        return (
+            torch.cat([q_rot, q_pass], dim=-1),
+            torch.cat([k_rot, k_pass], dim=-1),
+        )

@@ -5,6 +5,7 @@ import torch
 
 from somatic.model.attention import ChainAwareAttention, MultiHeadAttention
 from somatic.model.normalization import LearnedQKScale, QKNormModule, QKVNormModule
+from somatic.model.transformer import SomaticConfig, SomaticModel
 
 
 class TestMultiHeadAttention:
@@ -454,3 +455,53 @@ class TestChainAwareAttentionHybridNorm:
         assert attn_weights.shape == (batch, 4, seq_len, seq_len)
         row_sums = attn_weights.sum(dim=-1)
         assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)
+
+
+class TestRopeFractionPropagation:
+    def test_rope_fraction_reaches_every_block(self):
+        """SomaticConfig.rope_fraction must propagate to every block's RoPE."""
+        config = SomaticConfig(
+            d_model=32, n_layers=2, n_heads=2, max_seq_len=16, rope_fraction=0.5
+        )
+        model = SomaticModel(config)
+        for block in model.encoder.layers:
+            assert block.attention.rope.fraction == 0.5
+            # head_dim = 32 / 2 = 16, fraction=0.5 -> rotated_dim=8
+            assert block.attention.rope.rotated_dim == 8
+
+    def test_default_rope_fraction_is_full_rope(self):
+        """Default rope_fraction=1.0 -> rotated_dim == head_dim on every block."""
+        config = SomaticConfig(d_model=32, n_layers=2, n_heads=2, max_seq_len=16)
+        model = SomaticModel(config)
+        for block in model.encoder.layers:
+            assert block.attention.rope.fraction == 1.0
+            assert block.attention.rope.rotated_dim == 16
+
+    def test_partial_rope_forward_backward_chain_aware(self):
+        """Tiny ChainAware model with rope_fraction=0.5 runs forward+backward."""
+        config = SomaticConfig(
+            d_model=32, n_layers=2, n_heads=2, max_seq_len=16, rope_fraction=0.5
+        )
+        model = SomaticModel(config)
+        token_ids = torch.randint(0, config.vocab_size, (2, 8))
+        chain_ids = torch.zeros(2, 8, dtype=torch.long)
+        out = model(token_ids, chain_ids)
+        out["logits"].sum().backward()
+
+    def test_nope_forward_backward_multihead(self):
+        """Standard MultiHeadAttention with rope_fraction=0.0 (NoPE) runs."""
+        config = SomaticConfig(
+            d_model=32,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=16,
+            rope_fraction=0.0,
+            use_chain_aware_attention=False,
+        )
+        model = SomaticModel(config)
+        for block in model.encoder.layers:
+            assert block.attention.rope.rotated_dim == 0
+        token_ids = torch.randint(0, config.vocab_size, (2, 8))
+        chain_ids = torch.zeros(2, 8, dtype=torch.long)
+        out = model(token_ids, chain_ids)
+        out["logits"].sum().backward()

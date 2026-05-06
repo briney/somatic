@@ -12,6 +12,11 @@ ffn_multiplier: null
 
 max_seq_len: 320
 
+# Fraction of head_dim that gets RoPE.
+# 1.0 = full RoPE (default); 0.0 = NoPE; values in between = partial RoPE
+# (first rope_fraction of head_dim is rotated, remainder is un-rotated).
+rope_fraction: 1.0
+
 dropout: 0.1
 attention_dropout: 0.1
 embedding_dropout: 0.1

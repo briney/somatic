@@ -108,6 +108,26 @@ class TestSomaticConfig:
         config = SomaticConfig(**d)
         assert config.hybrid_norm == "none"
 
+    def test_legacy_config_dict_missing_rope_fraction(self):
+        # Old serialized configs predating rope_fraction default to full RoPE.
+        d = {
+            "vocab_size": 32,
+            "d_model": 64,
+            "n_layers": 2,
+            "n_heads": 2,
+        }
+        config = SomaticConfig(**d)
+        assert config.rope_fraction == 1.0
+
+    def test_default_rope_fraction(self):
+        config = SomaticConfig()
+        assert config.rope_fraction == 1.0
+
+    @pytest.mark.parametrize("bad_value", [-0.1, 1.1, 2.0])
+    def test_invalid_rope_fraction_raises(self, bad_value):
+        with pytest.raises(ValueError, match="rope_fraction"):
+            SomaticConfig(rope_fraction=bad_value)
+
 
 class TestSomaticModel:
     @pytest.fixture

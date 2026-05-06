@@ -33,6 +33,12 @@ class SomaticConfig:
 
     max_seq_len: int = 320
 
+    # Fraction of head_dim to apply RoPE to.
+    # 1.0 = full RoPE (default); 0.0 = NoPE; partial values rotate the first
+    # int(head_dim * rope_fraction) (rounded down to even) dims and pass the
+    # remainder through un-rotated.
+    rope_fraction: float = 1.0
+
     dropout: float = 0.1
     attention_dropout: float = 0.1
     embedding_dropout: float = 0.1
@@ -73,6 +79,12 @@ class SomaticConfig:
                 stacklevel=2,
             )
         self.head_dim = computed_head_dim
+
+        # Validate rope_fraction
+        if not 0.0 <= self.rope_fraction <= 1.0:
+            raise ValueError(
+                f"rope_fraction must be in [0.0, 1.0], got {self.rope_fraction}"
+            )
 
         # Set default ffn_multiplier if not provided
         if self.ffn_multiplier is None:
@@ -146,6 +158,7 @@ class SomaticModel(nn.Module):
             qk_norm=config.qk_norm,
             layer_norm_eps=config.layer_norm_eps,
             hybrid_norm=config.hybrid_norm,
+            rope_fraction=config.rope_fraction,
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)

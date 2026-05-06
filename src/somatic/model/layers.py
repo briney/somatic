@@ -40,6 +40,7 @@ class TransformerBlock(nn.Module):
         qk_norm: str = "none",
         hybrid_norm: bool = False,
         hybrid_first_layer: bool = False,
+        rope_fraction: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -85,6 +86,7 @@ class TransformerBlock(nn.Module):
             norm_type=norm_type,
             layer_norm_eps=layer_norm_eps,
             hybrid_norm=hybrid_norm,
+            rope_fraction=rope_fraction,
         )
 
         self.ffn = FusedSwiGLUFFN(d_model=d_model, d_ffn=d_ffn, dropout=dropout)
@@ -176,6 +178,7 @@ class TransformerEncoder(nn.Module):
         qk_norm: str = "none",
         layer_norm_eps: float = 1e-6,
         hybrid_norm: str = "none",
+        rope_fraction: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -199,6 +202,7 @@ class TransformerEncoder(nn.Module):
                     qk_norm=qk_norm,
                     hybrid_norm=hybrid_norm_enabled,
                     hybrid_first_layer=(hybrid_norm == "star" and i == 0),
+                    rope_fraction=rope_fraction,
                 )
                 for i in range(n_layers)
             ]

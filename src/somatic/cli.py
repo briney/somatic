@@ -233,12 +233,17 @@ def model_size(
         d_ffn=cfg.model.d_ffn,
         ffn_multiplier=cfg.model.ffn_multiplier,
         max_seq_len=cfg.model.max_seq_len,
-        max_timesteps=cfg.model.max_timesteps,
-        use_timestep_embedding=cfg.model.use_timestep_embedding,
+        rope_fraction=cfg.model.rope_fraction,
         dropout=cfg.model.dropout,
         attention_dropout=cfg.model.attention_dropout,
         embedding_dropout=cfg.model.embedding_dropout,
         use_chain_aware_attention=cfg.model.use_chain_aware_attention,
+        norm_type=cfg.model.norm_type,
+        pre_norm=cfg.model.pre_norm,
+        post_norm=cfg.model.post_norm,
+        qk_norm=cfg.model.qk_norm,
+        layer_norm_eps=cfg.model.layer_norm_eps,
+        hybrid_norm=cfg.model.hybrid_norm,
     )
 
     # Create model and get parameter count
