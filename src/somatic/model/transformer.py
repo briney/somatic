@@ -47,6 +47,16 @@ class SomaticConfig:
     post_norm: bool = False  # Apply normalization after attention/FFN
     qk_norm: str = "none"  # "none", "norm", or "learned_scale"
     layer_norm_eps: float = 1e-6  # Epsilon for normalization layers
+    # HybridNorm block layout (Zhuo et al., arXiv 2503.04598). One of:
+    #   "none"     - disabled; pre_norm/post_norm/qk_norm are used as configured
+    #   "standard" - all layers use HybridNorm: QKV-norm inside attention with
+    #                un-normalized residual + FFN with normed input AND normed
+    #                residual base
+    #   "star"     - HybridNorm* variant: layer 0 is Pre-Norm (with QKV-norm
+    #                in attention); layers 1..N-1 are standard HybridNorm
+    # When non-"none", overrides pre_norm/post_norm/qk_norm (those flags are
+    # ignored). norm_type and layer_norm_eps are still respected.
+    hybrid_norm: str = "none"
 
     def __post_init__(self) -> None:
         # Validate and compute head_dim
@@ -80,16 +90,26 @@ class SomaticConfig:
                 f"norm_type must be one of {valid_norm_types}, got '{self.norm_type}'"
             )
 
-        # Validate pre_norm/post_norm - at least one must be True
-        if not self.pre_norm and not self.post_norm:
-            raise ValueError("At least one of pre_norm or post_norm must be True")
-
-        # Validate qk_norm
-        valid_qk_norms = {"none", "norm", "learned_scale"}
-        if self.qk_norm not in valid_qk_norms:
+        # Validate hybrid_norm
+        valid_hybrid_norms = {"none", "standard", "star"}
+        if self.hybrid_norm not in valid_hybrid_norms:
             raise ValueError(
-                f"qk_norm must be one of {valid_qk_norms}, got '{self.qk_norm}'"
+                f"hybrid_norm must be one of {valid_hybrid_norms}, got '{self.hybrid_norm}'"
             )
+
+        # pre_norm/post_norm/qk_norm are inert when hybrid_norm is enabled, so
+        # skip their validation in that case
+        if self.hybrid_norm == "none":
+            # Validate pre_norm/post_norm - at least one must be True
+            if not self.pre_norm and not self.post_norm:
+                raise ValueError("At least one of pre_norm or post_norm must be True")
+
+            # Validate qk_norm
+            valid_qk_norms = {"none", "norm", "learned_scale"}
+            if self.qk_norm not in valid_qk_norms:
+                raise ValueError(
+                    f"qk_norm must be one of {valid_qk_norms}, got '{self.qk_norm}'"
+                )
 
 
 class SomaticModel(nn.Module):
@@ -125,6 +145,7 @@ class SomaticModel(nn.Module):
             post_norm=config.post_norm,
             qk_norm=config.qk_norm,
             layer_norm_eps=config.layer_norm_eps,
+            hybrid_norm=config.hybrid_norm,
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -308,6 +329,9 @@ class SomaticModel(nn.Module):
         # Handle legacy checkpoints with timestep-related fields
         config_dict.pop("max_timesteps", None)
         config_dict.pop("use_timestep_embedding", None)
+        # Coerce legacy bool hybrid_norm (pre-string-enum) to its string equivalent
+        if isinstance(config_dict.get("hybrid_norm"), bool):
+            config_dict["hybrid_norm"] = "standard" if config_dict["hybrid_norm"] else "none"
 
         config = SomaticConfig(**config_dict)
         model = cls(config)

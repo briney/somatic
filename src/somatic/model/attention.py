@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 
-from .normalization import create_qk_norm
+from .normalization import create_qk_norm, create_qkv_norm
 from .rope import RotaryPositionEmbedding
 
 
@@ -32,6 +32,7 @@ class BaseAttention(nn.Module):
         qk_norm: str = "none",
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
+        hybrid_norm: bool = False,
     ) -> None:
         super().__init__()
 
@@ -41,6 +42,7 @@ class BaseAttention(nn.Module):
         self.scale = head_dim**-0.5
         self.dropout_p = dropout
         self.inner_dim = n_heads * head_dim
+        self.hybrid_norm = hybrid_norm
 
         # Output projection (shared by all attention types)
         self.out_proj = nn.Linear(self.inner_dim, d_model, bias=bias)
@@ -50,10 +52,13 @@ class BaseAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-        # QK normalization
-        self.qk_norm_module = create_qk_norm(
-            qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
-        )
+        # QK normalization is disabled in hybrid_norm mode (subclasses build QKV norm instead)
+        if hybrid_norm:
+            self.qk_norm_module = None
+        else:
+            self.qk_norm_module = create_qk_norm(
+                qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
+            )
 
     def _apply_qk_norm(self, q: Tensor, k: Tensor) -> tuple[Tensor, Tensor]:
         """Apply QK normalization if configured."""
@@ -115,16 +120,22 @@ class MultiHeadAttention(BaseAttention):
         qk_norm: str = "none",
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
+        hybrid_norm: bool = False,
     ) -> None:
         super().__init__(
             d_model, n_heads, head_dim, dropout, bias, max_seq_len,
-            qk_norm, norm_type, layer_norm_eps
+            qk_norm, norm_type, layer_norm_eps, hybrid_norm,
         )
 
         # QKV projections
         self.q_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
         self.k_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
         self.v_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
+
+        # HybridNorm: QKV-norm in place of QK-norm
+        self.qkv_norm: nn.Module | None = None
+        if hybrid_norm:
+            self.qkv_norm = create_qkv_norm(norm_type, head_dim, layer_norm_eps)
 
     def forward(
         self,
@@ -159,8 +170,11 @@ class MultiHeadAttention(BaseAttention):
         # Apply RoPE
         q, k = self.rope(q, k)
 
-        # Apply QK normalization
-        q, k = self._apply_qk_norm(q, k)
+        # Apply QKV/QK normalization
+        if self.qkv_norm is not None:
+            q, k, v = self.qkv_norm(q, k, v)
+        else:
+            q, k = self._apply_qk_norm(q, k)
 
         if need_weights:
             # Manual attention computation to get weights
@@ -235,11 +249,13 @@ class ChainAwareAttention(BaseAttention):
         qk_norm: str = "none",
         norm_type: str = "layernorm",
         layer_norm_eps: float = 1e-6,
+        hybrid_norm: bool = False,
     ) -> None:
         # Don't pass qk_norm to base class - we handle it separately for self/cross paths
         super().__init__(
             d_model, n_heads, head_dim, dropout, bias, max_seq_len,
-            qk_norm="none", norm_type=norm_type, layer_norm_eps=layer_norm_eps
+            qk_norm="none", norm_type=norm_type, layer_norm_eps=layer_norm_eps,
+            hybrid_norm=hybrid_norm,
         )
 
         # Self-attention projections (RoPE will be applied to Q and K)
@@ -252,13 +268,21 @@ class ChainAwareAttention(BaseAttention):
         self.k_cross = nn.Linear(d_model, self.inner_dim, bias=bias)
         self.v_cross = nn.Linear(d_model, self.inner_dim, bias=bias)
 
-        # Separate QK normalization for self-attention and cross-attention paths
-        self.qk_norm_self = create_qk_norm(
-            qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
-        )
-        self.qk_norm_cross = create_qk_norm(
-            qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
-        )
+        # Normalization: HybridNorm uses QKV-norm; otherwise QK-norm (per path)
+        self.qkv_norm_self: nn.Module | None = None
+        self.qkv_norm_cross: nn.Module | None = None
+        self.qk_norm_self: nn.Module | None = None
+        self.qk_norm_cross: nn.Module | None = None
+        if hybrid_norm:
+            self.qkv_norm_self = create_qkv_norm(norm_type, head_dim, layer_norm_eps)
+            self.qkv_norm_cross = create_qkv_norm(norm_type, head_dim, layer_norm_eps)
+        else:
+            self.qk_norm_self = create_qk_norm(
+                qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
+            )
+            self.qk_norm_cross = create_qk_norm(
+                qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
+            )
 
     def _create_chain_mask(self, chain_ids: Tensor) -> Tensor:
         """
@@ -311,10 +335,14 @@ class ChainAwareAttention(BaseAttention):
         # Apply RoPE only to self-attention Q and K (not cross-attention)
         q_self, k_self = self.rope(q_self, k_self)
 
-        # Apply QK normalization to both paths
-        if self.qk_norm_self is not None:
+        # Apply normalization (QKV in HybridNorm mode, otherwise QK)
+        if self.qkv_norm_self is not None:
+            q_self, k_self, v_self = self.qkv_norm_self(q_self, k_self, v_self)
+        elif self.qk_norm_self is not None:
             q_self, k_self = self.qk_norm_self(q_self, k_self)
-        if self.qk_norm_cross is not None:
+        if self.qkv_norm_cross is not None:
+            q_cross, k_cross, v_cross = self.qkv_norm_cross(q_cross, k_cross, v_cross)
+        elif self.qk_norm_cross is not None:
             q_cross, k_cross = self.qk_norm_cross(q_cross, k_cross)
 
         # Compute raw attention scores

@@ -24,3 +24,4 @@ pre_norm: true
 post_norm: false
 qk_norm: none # "none", "norm", or "learned_scale"
 layer_norm_eps: 1e-6
+hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/post/qk_norm (Zhuo et al., 2025)

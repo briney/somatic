@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from somatic.model.attention import ChainAwareAttention, MultiHeadAttention
-from somatic.model.normalization import LearnedQKScale, QKNormModule
+from somatic.model.normalization import LearnedQKScale, QKNormModule, QKVNormModule
 
 
 class TestMultiHeadAttention:
@@ -358,5 +358,99 @@ class TestChainAwareAttentionQKNorm:
         assert out.shape == x.shape
         assert attn_weights.shape == (batch, 4, seq_len, seq_len)
         # Weights should still sum to 1
+        row_sums = attn_weights.sum(dim=-1)
+        assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)
+
+
+class TestMultiHeadAttentionHybridNorm:
+    """Tests for MultiHeadAttention with HybridNorm (QKV-norm in attention)."""
+
+    def test_hybrid_norm_disables_qk_norm(self):
+        attn = MultiHeadAttention(
+            d_model=64, n_heads=4, head_dim=16,
+            qk_norm="norm", hybrid_norm=True,
+        )
+        assert attn.qk_norm_module is None
+        assert isinstance(attn.qkv_norm, QKVNormModule)
+
+    @pytest.mark.parametrize("norm_type", ["layernorm", "rmsnorm"])
+    def test_hybrid_norm_forward(self, norm_type):
+        attn = MultiHeadAttention(
+            d_model=64, n_heads=4, head_dim=16,
+            hybrid_norm=True, norm_type=norm_type,
+        )
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = torch.zeros(batch, seq_len).long()
+
+        out = attn(x, chain_ids)
+        assert out.shape == x.shape
+        assert not torch.isnan(out).any()
+
+    def test_hybrid_norm_with_attention_weights(self):
+        attn = MultiHeadAttention(
+            d_model=64, n_heads=4, head_dim=16, hybrid_norm=True,
+        )
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = torch.zeros(batch, seq_len).long()
+
+        attn.eval()
+        out, attn_weights = attn(x, chain_ids, need_weights=True)
+
+        assert out.shape == x.shape
+        assert attn_weights.shape == (batch, 4, seq_len, seq_len)
+        row_sums = attn_weights.sum(dim=-1)
+        assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)
+
+
+class TestChainAwareAttentionHybridNorm:
+    """Tests for ChainAwareAttention with HybridNorm (separate QKV-norm per path)."""
+
+    def test_hybrid_norm_creates_separate_qkv_modules(self):
+        attn = ChainAwareAttention(
+            d_model=64, n_heads=4, head_dim=16, hybrid_norm=True,
+        )
+        # No QK-norm modules in hybrid mode
+        assert attn.qk_norm_self is None
+        assert attn.qk_norm_cross is None
+        # Two separate QKV-norm modules (6 underlying norm layers total)
+        assert isinstance(attn.qkv_norm_self, QKVNormModule)
+        assert isinstance(attn.qkv_norm_cross, QKVNormModule)
+        assert attn.qkv_norm_self is not attn.qkv_norm_cross
+
+    @pytest.mark.parametrize("norm_type", ["layernorm", "rmsnorm"])
+    def test_hybrid_norm_forward(self, norm_type):
+        attn = ChainAwareAttention(
+            d_model=64, n_heads=4, head_dim=16,
+            hybrid_norm=True, norm_type=norm_type,
+        )
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = torch.cat(
+            [torch.zeros(batch, seq_len // 2), torch.ones(batch, seq_len // 2)],
+            dim=1,
+        ).long()
+
+        out = attn(x, chain_ids)
+        assert out.shape == x.shape
+        assert not torch.isnan(out).any()
+
+    def test_hybrid_norm_with_attention_weights(self):
+        attn = ChainAwareAttention(
+            d_model=64, n_heads=4, head_dim=16, hybrid_norm=True,
+        )
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = torch.cat(
+            [torch.zeros(batch, seq_len // 2), torch.ones(batch, seq_len // 2)],
+            dim=1,
+        ).long()
+
+        attn.eval()
+        out, attn_weights = attn(x, chain_ids, need_weights=True)
+
+        assert out.shape == x.shape
+        assert attn_weights.shape == (batch, 4, seq_len, seq_len)
         row_sums = attn_weights.sum(dim=-1)
         assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)

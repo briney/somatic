@@ -1,10 +1,12 @@
 """Tests for the main Somatic transformer model."""
 
+from dataclasses import asdict
+
 import pytest
 import torch
 
 from somatic.model import SomaticConfig, SomaticModel
-from somatic.model.normalization import RMSNorm
+from somatic.model.normalization import QKVNormModule, RMSNorm
 
 
 class TestSomaticConfig:
@@ -70,6 +72,41 @@ class TestSomaticConfig:
 
         config = SomaticConfig(qk_norm="learned_scale")
         assert config.qk_norm == "learned_scale"
+
+    def test_hybrid_norm_default_none(self):
+        config = SomaticConfig()
+        assert config.hybrid_norm == "none"
+
+    def test_hybrid_norm_invalid_value_raises(self):
+        with pytest.raises(ValueError, match="hybrid_norm"):
+            SomaticConfig(hybrid_norm="bogus")
+
+    @pytest.mark.parametrize("variant", ["standard", "star"])
+    def test_hybrid_norm_skips_pre_post_validation(self, variant):
+        # Both pre/post False would normally raise; hybrid_norm makes them inert
+        config = SomaticConfig(pre_norm=False, post_norm=False, hybrid_norm=variant)
+        assert config.hybrid_norm == variant
+
+    @pytest.mark.parametrize("variant", ["standard", "star"])
+    def test_hybrid_norm_skips_qk_norm_validation(self, variant):
+        # An invalid qk_norm value would normally raise; hybrid_norm makes it inert
+        config = SomaticConfig(qk_norm="bogus", hybrid_norm=variant)
+        assert config.hybrid_norm == variant
+
+    def test_hybrid_norm_still_validates_norm_type(self):
+        with pytest.raises(ValueError, match="norm_type"):
+            SomaticConfig(norm_type="invalid", hybrid_norm="standard")
+
+    def test_legacy_config_dict_missing_hybrid_norm(self):
+        # Old serialized configs predating hybrid_norm should deserialize cleanly
+        d = {
+            "vocab_size": 32,
+            "d_model": 64,
+            "n_layers": 2,
+            "n_heads": 2,
+        }
+        config = SomaticConfig(**d)
+        assert config.hybrid_norm == "none"
 
 
 class TestSomaticModel:
@@ -417,3 +454,143 @@ class TestSomaticModelNormalization:
             out2 = loaded_model(token_ids, chain_ids)
 
         assert torch.allclose(out1["logits"], out2["logits"])
+
+    @pytest.mark.parametrize("use_chain_aware", [True, False])
+    @pytest.mark.parametrize("norm_type", ["layernorm", "rmsnorm"])
+    @pytest.mark.parametrize("variant", ["standard", "star"])
+    def test_hybrid_norm_forward(
+        self, base_config_kwargs, sample_inputs, use_chain_aware, norm_type, variant
+    ):
+        """HybridNorm variants produce valid outputs for both attention modes and norm types."""
+        config = SomaticConfig(
+            **base_config_kwargs,
+            hybrid_norm=variant,
+            norm_type=norm_type,
+            use_chain_aware_attention=use_chain_aware,
+        )
+        model = SomaticModel(config)
+
+        token_ids, chain_ids = sample_inputs
+        outputs = model(token_ids, chain_ids)
+
+        assert "logits" in outputs
+        assert not torch.isnan(outputs["logits"]).any()
+        assert outputs["logits"].shape == (2, 32, 32)
+
+    def test_hybrid_norm_standard_layer_check(self, base_config_kwargs):
+        """Standard HybridNorm blocks have only ffn_norm + attention QKV-norm."""
+        config = SomaticConfig(**base_config_kwargs, hybrid_norm="standard")
+        model = SomaticModel(config)
+
+        for block in model.encoder.layers:
+            assert block.hybrid_norm is True
+            assert block.hybrid_first_layer is False
+            assert block.attention_pre_norm is None
+            assert block.ffn_pre_norm is None
+            assert block.attention_post_norm is None
+            assert block.ffn_post_norm is None
+            assert block.ffn_norm is not None
+            # Chain-aware attention by default → both QKV norms exist, no QK norms
+            assert isinstance(block.attention.qkv_norm_self, QKVNormModule)
+            assert isinstance(block.attention.qkv_norm_cross, QKVNormModule)
+            assert block.attention.qk_norm_self is None
+            assert block.attention.qk_norm_cross is None
+
+    def test_hybrid_norm_star_layer_check(self, base_config_kwargs):
+        """HybridNorm* layer 0 is Pre-Norm with QKV-norm; later layers are standard hybrid."""
+        kwargs = {**base_config_kwargs, "n_layers": 3}
+        config = SomaticConfig(**kwargs, hybrid_norm="star")
+        model = SomaticModel(config)
+
+        # Layer 0: Pre-Norm wiring (attention + FFN pre-norms; no ffn_norm)
+        first = model.encoder.layers[0]
+        assert first.hybrid_norm is True
+        assert first.hybrid_first_layer is True
+        assert first.attention_pre_norm is not None
+        assert first.ffn_pre_norm is not None
+        assert first.attention_post_norm is None
+        assert first.ffn_post_norm is None
+        assert first.ffn_norm is None
+        # QKV-norm is still active at layer 0
+        assert isinstance(first.attention.qkv_norm_self, QKVNormModule)
+        assert isinstance(first.attention.qkv_norm_cross, QKVNormModule)
+
+        # Subsequent layers: standard HybridNorm
+        for block in model.encoder.layers[1:]:
+            assert block.hybrid_norm is True
+            assert block.hybrid_first_layer is False
+            assert block.attention_pre_norm is None
+            assert block.ffn_pre_norm is None
+            assert block.ffn_norm is not None
+
+    @pytest.mark.parametrize("variant", ["standard", "star"])
+    def test_hybrid_norm_save_load(self, base_config_kwargs, sample_inputs, tmp_path, variant):
+        """HybridNorm config round-trips through save_pretrained/from_pretrained."""
+        config = SomaticConfig(
+            **base_config_kwargs, hybrid_norm=variant, norm_type="rmsnorm",
+        )
+        model = SomaticModel(config)
+
+        save_path = tmp_path / f"hybrid_norm_{variant}_model.pt"
+        model.save_pretrained(str(save_path))
+
+        loaded_model = SomaticModel.from_pretrained(str(save_path))
+        assert loaded_model.config.hybrid_norm == variant
+        assert loaded_model.config.norm_type == "rmsnorm"
+
+        token_ids, chain_ids = sample_inputs
+        model.eval()
+        loaded_model.eval()
+        with torch.no_grad():
+            out1 = model(token_ids, chain_ids)
+            out2 = loaded_model(token_ids, chain_ids)
+        assert torch.allclose(out1["logits"], out2["logits"])
+
+    def test_hybrid_norm_legacy_bool_coercion(self, base_config_kwargs, sample_inputs, tmp_path):
+        """Old checkpoints with hybrid_norm: bool coerce to the string equivalent on load."""
+        # Build a model the new way
+        config = SomaticConfig(**base_config_kwargs, hybrid_norm="standard")
+        model = SomaticModel(config)
+
+        # Forge a legacy-format checkpoint where hybrid_norm is the old bool
+        legacy_dict = asdict(config)
+        legacy_dict["hybrid_norm"] = True  # legacy bool form
+        save_path = tmp_path / "legacy_hybrid_norm.pt"
+        torch.save(
+            {"config": legacy_dict, "model_state_dict": model.state_dict()},
+            str(save_path),
+        )
+
+        loaded = SomaticModel.from_pretrained(str(save_path))
+        assert loaded.config.hybrid_norm == "standard"
+
+        token_ids, chain_ids = sample_inputs
+        model.eval()
+        loaded.eval()
+        with torch.no_grad():
+            out1 = model(token_ids, chain_ids)
+            out2 = loaded(token_ids, chain_ids)
+        assert torch.allclose(out1["logits"], out2["logits"])
+
+    def test_hybrid_norm_overrides_pre_post_qk(self, base_config_kwargs, sample_inputs):
+        """When hybrid_norm=standard, pre_norm/post_norm/qk_norm flags are ignored."""
+        config = SomaticConfig(
+            **base_config_kwargs,
+            hybrid_norm="standard",
+            pre_norm=True,
+            post_norm=True,
+            qk_norm="norm",
+        )
+        model = SomaticModel(config)
+
+        block = model.encoder.layers[0]
+        # Pre/post norm layers must not be created in standard hybrid mode
+        assert block.attention_pre_norm is None
+        assert block.ffn_post_norm is None
+        # Attention should not have a qk_norm_module
+        assert block.attention.qk_norm_self is None
+        assert block.attention.qk_norm_cross is None
+
+        token_ids, chain_ids = sample_inputs
+        outputs = model(token_ids, chain_ids)
+        assert not torch.isnan(outputs["logits"]).any()

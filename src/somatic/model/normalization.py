@@ -101,6 +101,48 @@ class QKNormModule(nn.Module):
         return self.q_norm(q), self.k_norm(k)
 
 
+class QKVNormModule(nn.Module):
+    """
+    Applies separate normalization to Q, K, and V tensors.
+
+    Used by the HybridNorm scheme (Zhuo et al., arXiv 2503.04598), which
+    normalizes all three of Q, K, V inside the attention sub-block in place
+    of an input pre-norm.
+
+    Args:
+        norm_type: Type of normalization ("layernorm" or "rmsnorm")
+        head_dim: Dimension per head
+        eps: Epsilon for numerical stability
+    """
+
+    def __init__(
+        self,
+        norm_type: str,
+        head_dim: int,
+        eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        self.q_norm = create_norm_layer(norm_type, head_dim, eps)
+        self.k_norm = create_norm_layer(norm_type, head_dim, eps)
+        self.v_norm = create_norm_layer(norm_type, head_dim, eps)
+
+    def forward(
+        self, q: Tensor, k: Tensor, v: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """
+        Apply normalization to Q, K, and V.
+
+        Args:
+            q: Query tensor of shape (batch, n_heads, seq_len, head_dim)
+            k: Key tensor of shape (batch, n_heads, seq_len, head_dim)
+            v: Value tensor of shape (batch, n_heads, seq_len, head_dim)
+
+        Returns:
+            Normalized (q, k, v) tensors
+        """
+        return self.q_norm(q), self.k_norm(k), self.v_norm(v)
+
+
 def create_norm_layer(
     norm_type: str,
     normalized_shape: int,
@@ -159,3 +201,22 @@ def create_qk_norm(
         return LearnedQKScale(n_heads, head_dim)
     else:
         raise ValueError(f"Unknown qk_norm_type: {qk_norm_type}")
+
+
+def create_qkv_norm(
+    norm_type: str,
+    head_dim: int,
+    eps: float = 1e-6,
+) -> QKVNormModule:
+    """
+    Factory function to create QKV normalization for HybridNorm.
+
+    Args:
+        norm_type: Base norm type ("layernorm" or "rmsnorm")
+        head_dim: Dimension per head
+        eps: Epsilon for numerical stability
+
+    Returns:
+        QKVNormModule instance
+    """
+    return QKVNormModule(norm_type, head_dim, eps)
