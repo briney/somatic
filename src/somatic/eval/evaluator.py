@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
+from ..utils.progress import ProgressManager
 from .base import Metric
 from .masking import EvalMasker, create_eval_masker
 from .region_config import RegionEvalConfig, build_region_eval_config
@@ -160,6 +160,7 @@ class Evaluator:
         eval_loader: DataLoader,
         eval_name: str,
         masker: Any = None,
+        progress: ProgressManager | None = None,
     ) -> dict[str, float]:
         """Run evaluation on a dataset.
 
@@ -173,6 +174,8 @@ class Evaluator:
             eval_name: Name of the evaluation dataset.
             masker: Optional masker for creating mask labels.
                 Ignored if self.eval_masker is configured.
+            progress: Optional ProgressManager to render eval sub-bars on.
+                If None, a one-shot standalone bar is rendered for this call.
 
         Returns:
             Dictionary mapping metric names to values.
@@ -200,8 +203,18 @@ class Evaluator:
         if self.eval_masker is not None:
             generator = self.eval_masker.get_generator(device)
 
-        with torch.no_grad():
-            for batch in tqdm(eval_loader, desc=f"Eval ({eval_name})", disable=not show_progress):
+        eval_task_cm = (
+            progress.eval_task(f"Eval ({eval_name})", total=len(eval_loader))
+            if progress is not None
+            else ProgressManager.standalone_eval_task(
+                f"Eval ({eval_name})",
+                total=len(eval_loader),
+                disable=not show_progress,
+            )
+        )
+
+        with torch.no_grad(), eval_task_cm as progress_task:
+            for batch in eval_loader:
                 # Move batch to device if not using accelerator
                 if self.accelerator is None:
                     batch = {
@@ -250,6 +263,8 @@ class Evaluator:
                     except Exception as e:
                         warnings.warn(f"Metric '{metric.name}' update failed: {e}")
 
+                progress_task.advance()
+
         # Aggregate across distributed processes
         self._gather_metric_states(metrics)
 
@@ -266,7 +281,9 @@ class Evaluator:
         region_cfg = self._get_region_config(eval_name)
         if region_cfg.get("enabled", False):
             try:
-                region_results = self._evaluate_regions(eval_loader, eval_name, region_cfg)
+                region_results = self._evaluate_regions(
+                    eval_loader, eval_name, region_cfg, progress=progress
+                )
                 # Prefix with "region/" and merge into results
                 for key, value in region_results.items():
                     results[f"region/{key}"] = value
@@ -360,6 +377,7 @@ class Evaluator:
         region_cfg: dict[str, Any],
         mask_labels_cache: list[torch.Tensor] | None = None,
         batch_cache: list[dict[str, torch.Tensor]] | None = None,
+        progress: ProgressManager | None = None,
     ) -> dict[str, float]:
         """Run region-based evaluation.
 
@@ -398,6 +416,7 @@ class Evaluator:
                 eval_masker=self.eval_masker,
                 create_eval_mask=self._create_eval_mask,
                 show_progress=show_progress,
+                progress=progress,
             )
         elif mode in ("per_position", "per-position"):
             return run_per_position_eval(
@@ -408,6 +427,7 @@ class Evaluator:
                 config=config,
                 accelerator=self.accelerator,
                 show_progress=show_progress,
+                progress=progress,
             )
         else:  # region_level or region-level
             return run_region_level_eval(
@@ -417,18 +437,22 @@ class Evaluator:
                 config=config,
                 accelerator=self.accelerator,
                 show_progress=show_progress,
+                progress=progress,
             )
 
     def evaluate_all(
         self,
         eval_loaders: dict[str, DataLoader],
         masker: Any = None,
+        progress: ProgressManager | None = None,
     ) -> dict[str, dict[str, float]]:
         """Evaluate on all configured evaluation datasets.
 
         Args:
             eval_loaders: Dictionary mapping eval dataset names to DataLoaders.
             masker: Optional masker for creating mask labels.
+            progress: Optional ProgressManager owned by the trainer; used to
+                render eval sub-bars under the persistent training bar.
 
         Returns:
             Dictionary mapping eval dataset names to their metric results.
@@ -436,7 +460,7 @@ class Evaluator:
         all_results: dict[str, dict[str, float]] = {}
 
         for eval_name, eval_loader in eval_loaders.items():
-            results = self.evaluate(eval_loader, eval_name, masker)
+            results = self.evaluate(eval_loader, eval_name, masker, progress=progress)
             all_results[eval_name] = results
 
         return all_results

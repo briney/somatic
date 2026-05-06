@@ -8,6 +8,7 @@ from .config import (
     merge_configs,
     save_yaml,
 )
+from .progress import ProgressManager, make_progress
 from .seed import get_generator, set_seed
 
 __all__ = [
@@ -21,4 +22,7 @@ __all__ = [
     "dict_to_dataclass",
     "merge_configs",
     "flatten_config",
+    # Progress
+    "ProgressManager",
+    "make_progress",
 ]

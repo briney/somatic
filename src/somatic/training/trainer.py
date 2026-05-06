@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from ..masking import InformationWeightedMasker, UniformMasker
 from ..model import SomaticModel
+from ..utils.progress import ProgressManager
 from .checkpoint import CheckpointConfig, CheckpointManager
 from .flops import FLOPsConfig, FLOPsTracker
 from .masking_frequency import MaskingFrequencyConfig, MaskingFrequencyTracker
@@ -171,6 +170,7 @@ class Trainer:
         self.epoch = 0.0
         self.steps_per_epoch = len(self.train_dataloader)
         self.logger = None
+        self._progress_manager: ProgressManager | None = None
 
         # Compute total steps for progress tracking
         if config.max_epochs is not None:
@@ -268,29 +268,30 @@ class Trainer:
         self.model.eval()
         eval_metrics = MetricAccumulator()
 
-        for batch in tqdm(
-            self.eval_dataloader,
-            desc="Evaluating",
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            mask_output = self._apply_masking(batch)
+        disable_progress = not self.accelerator.is_local_main_process
+        with ProgressManager.standalone_eval_task(
+            "Evaluating", total=len(self.eval_dataloader), disable=disable_progress
+        ) as progress_task:
+            for batch in self.eval_dataloader:
+                mask_output = self._apply_masking(batch)
 
-            outputs = self.model(
-                token_ids=mask_output["masked_ids"],
-                chain_ids=batch["chain_ids"],
-                attention_mask=batch["attention_mask"],
-            )
+                outputs = self.model(
+                    token_ids=mask_output["masked_ids"],
+                    chain_ids=batch["chain_ids"],
+                    attention_mask=batch["attention_mask"],
+                )
 
-            metrics = compute_mlm_metrics(
-                logits=outputs["logits"],
-                targets=batch["token_ids"],
-                mask_labels=mask_output["mask_labels"],
-                attention_mask=batch["attention_mask"],
-            )
+                metrics = compute_mlm_metrics(
+                    logits=outputs["logits"],
+                    targets=batch["token_ids"],
+                    mask_labels=mask_output["mask_labels"],
+                    attention_mask=batch["attention_mask"],
+                )
 
-            eval_metrics.update("loss", metrics.loss)
-            eval_metrics.update("accuracy", metrics.accuracy)
-            eval_metrics.update("perplexity", metrics.perplexity)
+                eval_metrics.update("loss", metrics.loss)
+                eval_metrics.update("accuracy", metrics.accuracy)
+                eval_metrics.update("perplexity", metrics.perplexity)
+                progress_task.advance()
 
         self.model.train()
 
@@ -319,11 +320,14 @@ class Trainer:
             return self.evaluator.evaluate_all(
                 self.eval_dataloaders,
                 masker=self.uniform_masker,
+                progress=self._progress_manager,
             )
 
         # Fall back to simple evaluation for each dataset
         all_results: dict[str, dict[str, float]] = {}
         self.model.eval()
+
+        disable_progress = not self.accelerator.is_local_main_process
 
         for eval_name, eval_loader in self.eval_dataloaders.items():
             eval_metrics = MetricAccumulator()
@@ -336,32 +340,42 @@ class Trainer:
             eval_tracker = self.eval_masking_frequency_trackers[eval_name]
             eval_tracker.reset()
 
-            for batch in tqdm(
-                eval_loader,
-                desc=f"Eval ({eval_name})",
-                disable=not self.accelerator.is_local_main_process,
-            ):
-                mask_output = self._apply_masking(batch)
-
-                # Track masking frequency for eval
-                eval_tracker.update(mask_output["mask_labels"], batch)
-
-                outputs = self.model(
-                    token_ids=mask_output["masked_ids"],
-                    chain_ids=batch["chain_ids"],
-                    attention_mask=batch["attention_mask"],
+            eval_task_cm = (
+                self._progress_manager.eval_task(
+                    f"Eval ({eval_name})", total=len(eval_loader)
                 )
-
-                metrics = compute_mlm_metrics(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_output["mask_labels"],
-                    attention_mask=batch["attention_mask"],
+                if self._progress_manager is not None
+                else ProgressManager.standalone_eval_task(
+                    f"Eval ({eval_name})",
+                    total=len(eval_loader),
+                    disable=disable_progress,
                 )
+            )
 
-                eval_metrics.update("loss", metrics.loss)
-                eval_metrics.update("accuracy", metrics.accuracy)
-                eval_metrics.update("perplexity", metrics.perplexity)
+            with eval_task_cm as progress_task:
+                for batch in eval_loader:
+                    mask_output = self._apply_masking(batch)
+
+                    # Track masking frequency for eval
+                    eval_tracker.update(mask_output["mask_labels"], batch)
+
+                    outputs = self.model(
+                        token_ids=mask_output["masked_ids"],
+                        chain_ids=batch["chain_ids"],
+                        attention_mask=batch["attention_mask"],
+                    )
+
+                    metrics = compute_mlm_metrics(
+                        logits=outputs["logits"],
+                        targets=batch["token_ids"],
+                        mask_labels=mask_output["mask_labels"],
+                        attention_mask=batch["attention_mask"],
+                    )
+
+                    eval_metrics.update("loss", metrics.loss)
+                    eval_metrics.update("accuracy", metrics.accuracy)
+                    eval_metrics.update("perplexity", metrics.perplexity)
+                    progress_task.advance()
 
             all_results[eval_name] = {
                 "loss": eval_metrics.compute("loss"),
@@ -389,14 +403,36 @@ class Trainer:
 
         self.accelerator.print(f"Starting training for {total_steps} steps...")
 
-        progress_bar = tqdm(
-            total=total_steps,
-            desc="Training",
-            disable=not self.accelerator.is_local_main_process,
-            file=sys.stdout,  # Explicit stdout for proper flushing with accelerate
-        )
-        progress_bar.update(self.global_step)
+        with ProgressManager(accelerator=self.accelerator) as progress:
+            self._progress_manager = progress
+            progress.train_task(total=total_steps, start=self.global_step)
 
+            self._train_loop(total_steps, progress)
+
+            # Final evaluation runs inside the live progress display so the
+            # eval sub-bars render under the (now-complete) training bar.
+            if self.eval_dataloaders:
+                progress.start_eval_cycle()
+                all_eval_metrics = self.evaluate_all()
+                final_metrics = {}
+                for eval_name, metrics in all_eval_metrics.items():
+                    for metric_name, value in metrics.items():
+                        final_metrics[f"{eval_name}/{metric_name}"] = value
+            else:
+                final_metrics = {}
+
+        self._progress_manager = None
+
+        # Final checkpoint - only main process saves
+        if self.accelerator.is_main_process:
+            self.checkpoint_manager.save(
+                step=self.global_step, epoch=self.epoch, metrics=final_metrics
+            )
+            if self.logger is not None:
+                self.logger.finish()
+
+    def _train_loop(self, total_steps: int, progress: ProgressManager) -> None:
+        """Inner training loop, scoped to the live progress display."""
         while self.global_step < total_steps:
             for batch in self.train_dataloader:
                 with self.accelerator.accumulate(self.model):
@@ -416,7 +452,7 @@ class Trainer:
                     self.scheduler.step()
                     self.global_step += 1
                     self.epoch = self.global_step / self.steps_per_epoch
-                    progress_bar.update(1)
+                    progress.advance_train()
 
                     self.metrics.update("train/loss", step_metrics.loss)
                     self.metrics.update("train/accuracy", step_metrics.accuracy)
@@ -469,6 +505,7 @@ class Trainer:
 
                     # Evaluation
                     if should_eval:
+                        progress.start_eval_cycle()
                         all_eval_metrics = self.evaluate_all()
                         if self.logger is not None and all_eval_metrics:
                             # Use log_eval_all if available, otherwise flatten and log
@@ -485,6 +522,7 @@ class Trainer:
                     # Checkpointing - reuse eval results if already computed
                     # Run eval on all ranks if needed (distributed dataloaders require it)
                     if should_checkpoint and all_eval_metrics is None and self.eval_dataloaders:
+                        progress.start_eval_cycle()
                         all_eval_metrics = self.evaluate_all()
 
                     # Only save checkpoints on main process to avoid file conflicts
@@ -509,23 +547,3 @@ class Trainer:
 
                     if self.global_step >= total_steps:
                         break
-
-        progress_bar.close()
-
-        # Final evaluation - all processes must participate (distributed dataloaders require it)
-        if self.eval_dataloaders:
-            all_eval_metrics = self.evaluate_all()
-            final_metrics = {}
-            for eval_name, metrics in all_eval_metrics.items():
-                for metric_name, value in metrics.items():
-                    final_metrics[f"{eval_name}/{metric_name}"] = value
-        else:
-            final_metrics = {}
-
-        # Final checkpoint - only main process saves
-        if self.accelerator.is_main_process:
-            self.checkpoint_manager.save(
-                step=self.global_step, epoch=self.epoch, metrics=final_metrics
-            )
-            if self.logger is not None:
-                self.logger.finish()

@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
+from ..utils.progress import ProgressManager
 from .per_position import PerPositionEvaluator, RegionMaskingEvaluator
 from .region_config import RegionEvalConfig
 from .regions import (
@@ -263,6 +263,7 @@ def run_standard_eval(
     eval_masker: "EvalMasker | None",
     create_eval_mask,
     show_progress: bool,
+    progress: ProgressManager | None = None,
 ) -> dict[str, float]:
     """Run standard region evaluation using existing masking.
 
@@ -299,11 +300,19 @@ def run_standard_eval(
     enabled_aggs = config.get_enabled_aggregates()
     warned_missing_mask = False
 
+    eval_task_cm = (
+        progress.eval_task("Region eval (standard)", total=len(eval_loader))
+        if progress is not None
+        else ProgressManager.standalone_eval_task(
+            "Region eval (standard)",
+            total=len(eval_loader),
+            disable=not show_progress,
+        )
+    )
+
     model.eval()
-    with torch.no_grad():
-        for batch in tqdm(
-            eval_loader, desc="Region eval (standard)", disable=not show_progress
-        ):
+    with torch.no_grad(), eval_task_cm as progress_task:
+        for batch in eval_loader:
             # Move batch to device if not using accelerator
             if accelerator is None:
                 batch = {
@@ -410,6 +419,8 @@ def run_standard_eval(
                     acc["total_prob"] += (target_probs * combined.float()).sum().item()
                     acc["count"] += combined.sum().item()
 
+            progress_task.advance()
+
     # Compute final metrics
     results = _compute_individual_region_results(region_accumulators, config)
     results.update(compute_aggregate_metrics(region_accumulators, config))
@@ -429,6 +440,7 @@ def run_per_position_eval(
     config: RegionEvalConfig,
     accelerator: "Accelerator | None",
     show_progress: bool,
+    progress: ProgressManager | None = None,
 ) -> dict[str, float]:
     """Run per-position region evaluation.
 
@@ -453,7 +465,8 @@ def run_per_position_eval(
         model=model,
         position_batch_size=position_batch_size,
         device=device,
-        show_progress=False,  # Outer tqdm handles progress
+        show_progress=False,  # Outer progress bar handles outer batches
+        progress=progress,
     )
 
     region_accumulators: dict[str, dict[str, float]] = {}
@@ -468,11 +481,19 @@ def run_per_position_eval(
     needs_nongermline = "nongermline" in enabled_aggs
     warned_missing_mask = False
 
+    eval_task_cm = (
+        progress.eval_task("Region eval (per-position)", total=len(eval_loader))
+        if progress is not None
+        else ProgressManager.standalone_eval_task(
+            "Region eval (per-position)",
+            total=len(eval_loader),
+            disable=not show_progress,
+        )
+    )
+
     model.eval()
-    with torch.no_grad():
-        for batch in tqdm(
-            eval_loader, desc="Region eval (per-position)", disable=not show_progress
-        ):
+    with torch.no_grad(), eval_task_cm as progress_task:
+        for batch in eval_loader:
             # Process each sample in the batch individually
             batch_size = batch["token_ids"].shape[0]
             for i in range(batch_size):
@@ -569,6 +590,8 @@ def run_per_position_eval(
                     region_accumulators, "nongermline", nongermline_positions, per_position_results
                 )
 
+            progress_task.advance()
+
     # Compute final metrics
     results = _compute_individual_region_results(region_accumulators, config)
     results.update(compute_aggregate_metrics(region_accumulators, config))
@@ -587,6 +610,7 @@ def run_region_level_eval(
     config: RegionEvalConfig,
     accelerator: "Accelerator | None",
     show_progress: bool,
+    progress: ProgressManager | None = None,
 ) -> dict[str, float]:
     """Run region-level (full region masking) evaluation.
 
@@ -616,11 +640,19 @@ def run_region_level_eval(
     needs_nongermline = "nongermline" in enabled_aggs
     warned_missing_mask = False
 
+    eval_task_cm = (
+        progress.eval_task("Region eval (region-level)", total=len(eval_loader))
+        if progress is not None
+        else ProgressManager.standalone_eval_task(
+            "Region eval (region-level)",
+            total=len(eval_loader),
+            disable=not show_progress,
+        )
+    )
+
     model.eval()
-    with torch.no_grad():
-        for batch in tqdm(
-            eval_loader, desc="Region eval (region-level)", disable=not show_progress
-        ):
+    with torch.no_grad(), eval_task_cm as progress_task:
+        for batch in eval_loader:
             # Process each sample in the batch individually
             batch_size = batch["token_ids"].shape[0]
             for i in range(batch_size):
@@ -700,6 +732,8 @@ def run_region_level_eval(
                                 acc["count"] += result["count"]
                             except Exception as e:
                                 warnings.warn(f"{group_name.title()} evaluation failed: {e}")
+
+            progress_task.advance()
 
     # Compute final metrics
     results = _compute_individual_region_results(region_accumulators, config)

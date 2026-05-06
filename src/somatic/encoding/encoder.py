@@ -11,6 +11,7 @@ from torch import Tensor
 from ..data.collator import AntibodyCollator
 from ..model import SomaticModel
 from ..tokenizer import tokenizer
+from ..utils.progress import ProgressManager
 from .pooling import MeanMaxPooling, PoolingStrategy, create_pooling
 
 
@@ -170,6 +171,7 @@ class SomaticEncoder:
         light_chains: list[str],
         return_numpy: bool = False,
         batch_size: int = 32,
+        show_progress: bool = True,
     ) -> Tensor | np.ndarray | list:
         """Encode a batch of antibody sequence pairs.
 
@@ -183,6 +185,8 @@ class SomaticEncoder:
             If True, return numpy arrays instead of tensors.
         batch_size
             Batch size for processing.
+        show_progress
+            If True, render a Rich progress bar over batches.
 
         Returns
         -------
@@ -198,30 +202,36 @@ class SomaticEncoder:
 
         all_embeddings = []
 
-        for i in range(0, len(heavy_chains), batch_size):
-            batch_heavy = heavy_chains[i : i + batch_size]
-            batch_light = light_chains[i : i + batch_size]
+        n_batches = (len(heavy_chains) + batch_size - 1) // batch_size
+        with ProgressManager.standalone_eval_task(
+            "Encoding", total=n_batches, disable=not show_progress
+        ) as progress_task:
+            for i in range(0, len(heavy_chains), batch_size):
+                batch_heavy = heavy_chains[i : i + batch_size]
+                batch_light = light_chains[i : i + batch_size]
 
-            batch = self._prepare_batch(batch_heavy, batch_light)
+                batch = self._prepare_batch(batch_heavy, batch_light)
 
-            outputs = self.model(
-                token_ids=batch["token_ids"],
-                chain_ids=batch["chain_ids"],
-                attention_mask=batch["attention_mask"],
-            )
+                outputs = self.model(
+                    token_ids=batch["token_ids"],
+                    chain_ids=batch["chain_ids"],
+                    attention_mask=batch["attention_mask"],
+                )
 
-            hidden_states = outputs["hidden_states"]
+                hidden_states = outputs["hidden_states"]
 
-            if self.pooling is not None:
-                embeddings = self.pooling(hidden_states, batch["attention_mask"])
-                all_embeddings.append(embeddings)
-            else:
-                for j in range(hidden_states.shape[0]):
-                    seq_len = int(batch["attention_mask"][j].sum().item())
-                    emb = hidden_states[j, :seq_len, :]
-                    if return_numpy:
-                        emb = emb.cpu().numpy()
-                    all_embeddings.append(emb)
+                if self.pooling is not None:
+                    embeddings = self.pooling(hidden_states, batch["attention_mask"])
+                    all_embeddings.append(embeddings)
+                else:
+                    for j in range(hidden_states.shape[0]):
+                        seq_len = int(batch["attention_mask"][j].sum().item())
+                        emb = hidden_states[j, :seq_len, :]
+                        if return_numpy:
+                            emb = emb.cpu().numpy()
+                        all_embeddings.append(emb)
+
+                progress_task.advance()
 
         if self.pooling is not None:
             result = torch.cat(all_embeddings, dim=0)

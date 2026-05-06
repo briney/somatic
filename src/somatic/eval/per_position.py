@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
-from tqdm import tqdm
 
 from ..tokenizer import tokenizer
+from ..utils.progress import ProgressManager
 from .regions import AntibodyRegion, extract_region_masks
 
 if TYPE_CHECKING:
@@ -33,7 +33,10 @@ class PerPositionEvaluator:
     device
         Device to run evaluation on.
     show_progress
-        Whether to show progress bar.
+        Whether to show a progress bar (only used when ``progress`` is None).
+    progress
+        Optional shared ProgressManager. When provided, the per-position bar
+        is added as another sub-bar in the current eval cycle.
     """
 
     def __init__(
@@ -42,11 +45,13 @@ class PerPositionEvaluator:
         position_batch_size: int = 32,
         device: torch.device | None = None,
         show_progress: bool = True,
+        progress: ProgressManager | None = None,
     ) -> None:
         self.model = model
         self.position_batch_size = position_batch_size
         self.device = device or next(model.parameters()).device
         self.show_progress = show_progress
+        self.progress = progress
 
     def evaluate_positions(
         self,
@@ -95,14 +100,22 @@ class PerPositionEvaluator:
 
         results: dict[int, dict[str, float]] = {}
 
-        self.model.eval()
-        with torch.no_grad():
-            # Process positions in batches
-            iterator = range(0, len(positions), self.position_batch_size)
-            if self.show_progress:
-                iterator = tqdm(iterator, desc="Per-position eval")
+        n_steps = (len(positions) + self.position_batch_size - 1) // self.position_batch_size
 
-            for batch_start in iterator:
+        if self.progress is not None:
+            task_cm = self.progress.eval_task("Per-position eval", total=n_steps)
+        elif self.show_progress:
+            task_cm = ProgressManager.standalone_eval_task(
+                "Per-position eval", total=n_steps
+            )
+        else:
+            task_cm = ProgressManager.standalone_eval_task(
+                "Per-position eval", total=n_steps, disable=True
+            )
+
+        self.model.eval()
+        with torch.no_grad(), task_cm as progress_task:
+            for batch_start in range(0, len(positions), self.position_batch_size):
                 batch_positions = positions[batch_start : batch_start + self.position_batch_size]
                 batch_size = len(batch_positions)
 
@@ -148,6 +161,8 @@ class PerPositionEvaluator:
                         "loss": loss,
                         "prob": prob,
                     }
+
+                progress_task.advance()
 
         return results
 
