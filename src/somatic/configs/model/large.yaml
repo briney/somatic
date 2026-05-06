@@ -11,6 +11,11 @@ ffn_multiplier: null
 
 max_seq_len: 320
 
+# Fraction of head_dim that gets RoPE.
+# 1.0 = full RoPE (default); 0.0 = NoPE; values in between = partial RoPE
+# (first rope_fraction of head_dim is rotated, remainder is un-rotated).
+rope_fraction: 1.0
+
 dropout: 0.1
 attention_dropout: 0.1
 embedding_dropout: 0.1
@@ -18,12 +23,12 @@ embedding_dropout: 0.1
 use_chain_aware_attention: true
 
 # Normalization options
-norm_type: layernorm  # "layernorm" or "rmsnorm"
+norm_type: layernorm # "layernorm" or "rmsnorm"
 pre_norm: true
 post_norm: false
-qk_norm: none  # "none", "norm", or "learned_scale"
+qk_norm: none # "none", "norm", or "learned_scale"
 layer_norm_eps: 1e-6
-hybrid_norm: "none"  # "none", "standard", or "star"; non-"none" overrides pre/post/qk_norm (Zhuo et al., 2025)
+hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/post/qk_norm (Zhuo et al., 2025)
 
 
 #-------------------------------
