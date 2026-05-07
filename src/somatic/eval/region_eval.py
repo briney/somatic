@@ -465,8 +465,7 @@ def run_per_position_eval(
         model=model,
         position_batch_size=position_batch_size,
         device=device,
-        show_progress=False,  # Outer progress bar handles outer batches
-        progress=progress,
+        show_progress=False,  # Outer "Region eval (per-position)" bar tracks per-batch progress
     )
 
     region_accumulators: dict[str, dict[str, float]] = {}
