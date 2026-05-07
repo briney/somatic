@@ -101,6 +101,7 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 | `attention_dropout` | float | `0.1` | Attention-specific dropout |
 | `embedding_dropout` | float | `0.1` | Embedding layer dropout |
 | `use_chain_aware_attention` | bool | `true` | Enable chain-aware (MINT-style) attention |
+| `chain_aware_projection_mode` | string | `separate` | Chain-aware projection variant: `separate` (Q/K/V per self/cross path) or `shared` (single Q/K/V). Ignored when `use_chain_aware_attention=false`. |
 | `norm_type` | string | `layernorm` | Normalization type: `layernorm` \| `rmsnorm` |
 | `pre_norm` | bool | `true` | Use pre-normalization (recommended) |
 | `post_norm` | bool | `false` | Use post-normalization |
@@ -118,6 +119,10 @@ somatic train model.d_model=512 model.n_layers=32
 
 # Disable chain-aware attention
 somatic train model.use_chain_aware_attention=false
+
+# Use shared-QKV chain-aware attention (one Q/K/V projection, chain-aware
+# routing through merged-softmax). Ignored when use_chain_aware_attention=false.
+somatic train model=small model.chain_aware_projection_mode=shared
 ```
 
 ---

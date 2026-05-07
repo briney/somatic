@@ -1,9 +1,13 @@
 """
 Attention modules for Somatic transformer.
 
-This module provides two attention implementations:
+This module provides three attention implementations:
 1. MultiHeadAttention: Standard self-attention with RoPE and SDPA optimization
-2. ChainAwareAttention: MINT-style hybrid intra/inter-chain attention
+2. ChainAwareAttention: MINT-style hybrid intra/inter-chain attention with
+   separate Q/K/V projections for self and cross paths
+3. SharedQKVChainAwareAttention: Chain-aware attention that shares one Q/K/V
+   projection but routes scores through RoPE (intra-chain) vs no-position
+   (inter-chain) before a single global softmax
 """
 
 from __future__ import annotations
@@ -220,6 +224,13 @@ class MultiHeadAttention(BaseAttention):
         return output
 
 
+def _create_chain_mask(chain_ids: Tensor) -> Tensor:
+    """Create intra-chain boolean mask of shape (batch, 1, seq_len, seq_len)."""
+    chain_i = chain_ids.unsqueeze(-1)
+    chain_j = chain_ids.unsqueeze(-2)
+    return (chain_i == chain_j).unsqueeze(1)
+
+
 class ChainAwareAttention(BaseAttention):
     """
     Attention module implementing MINT-style hybrid intra/inter-chain attention.
@@ -301,9 +312,7 @@ class ChainAwareAttention(BaseAttention):
         Returns:
             intra_mask: Boolean mask where True = same chain (batch, 1, seq_len, seq_len)
         """
-        chain_i = chain_ids.unsqueeze(-1)  # (batch, seq_len, 1)
-        chain_j = chain_ids.unsqueeze(-2)  # (batch, 1, seq_len)
-        return (chain_i == chain_j).unsqueeze(1)  # (batch, 1, seq_len, seq_len)
+        return _create_chain_mask(chain_ids)
 
     def forward(
         self,
@@ -387,6 +396,130 @@ class ChainAwareAttention(BaseAttention):
         output = out_self + out_cross
 
         # Reshape and project
+        output = rearrange(output, "b h s d -> b s (h d)")
+        output = self.out_proj(output)
+
+        if need_weights:
+            return output, attn_weights
+        return output
+
+
+class SharedQKVChainAwareAttention(BaseAttention):
+    """
+    Chain-aware attention with shared Q/K/V projections.
+
+    Like ChainAwareAttention, this module routes intra-chain queries through
+    RoPE-aware scores and inter-chain queries through unrotated (no-position)
+    scores, then merges the two score matrices and applies a single global
+    softmax. Unlike ChainAwareAttention, it uses one shared set of Q/K/V
+    projections (and one shared value path) instead of separate self/cross
+    projections.
+
+    HybridNorm is intentionally not supported in the first implementation; the
+    config layer rejects that combination.
+
+    Args:
+        d_model: Model dimension.
+        n_heads: Number of attention heads.
+        head_dim: Dimension per head.
+        dropout: Attention dropout probability.
+        bias: Whether to use bias in projections.
+        max_seq_len: Maximum sequence length for RoPE.
+        qk_norm: QK normalization type ("none", "norm", or "learned_scale").
+        norm_type: Normalization type for qk_norm="norm".
+        layer_norm_eps: Epsilon for normalization layers.
+        hybrid_norm: Must be False; HybridNorm is not supported here.
+        rope_fraction: Fraction of head_dim to apply RoPE to.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        head_dim: int = 64,
+        dropout: float = 0.0,
+        bias: bool = False,
+        max_seq_len: int = 512,
+        qk_norm: str = "none",
+        norm_type: str = "layernorm",
+        layer_norm_eps: float = 1e-6,
+        hybrid_norm: bool = False,
+        rope_fraction: float = 1.0,
+    ) -> None:
+        if hybrid_norm:
+            raise ValueError(
+                "SharedQKVChainAwareAttention does not support HybridNorm. "
+                "Set hybrid_norm='none' or use chain_aware_projection_mode='separate'."
+            )
+        super().__init__(
+            d_model, n_heads, head_dim, dropout, bias, max_seq_len,
+            qk_norm=qk_norm, norm_type=norm_type, layer_norm_eps=layer_norm_eps,
+            hybrid_norm=False,
+            rope_fraction=rope_fraction,
+        )
+
+        # Shared Q/K/V projections (named like MultiHeadAttention for parity)
+        self.q_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
+        self.k_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
+        self.v_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
+
+    def _create_chain_mask(self, chain_ids: Tensor) -> Tensor:
+        return _create_chain_mask(chain_ids)
+
+    def forward(
+        self,
+        x: Tensor,
+        chain_ids: Tensor,
+        attention_mask: Tensor | None = None,
+        need_weights: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        """
+        Forward pass with shared-QKV chain-aware attention.
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, d_model).
+            chain_ids: Chain identity tensor of shape (batch, seq_len).
+            attention_mask: Optional padding mask of shape (batch, seq_len).
+            need_weights: If True, also return merged attention weights.
+
+        Returns:
+            Output tensor of shape (batch, seq_len, d_model), or
+            (output, attn_weights) when need_weights=True.
+        """
+        batch_size, seq_len, _ = x.shape
+
+        # Single shared projection
+        q = rearrange(self.q_proj(x), "b s (h d) -> b h s d", h=self.n_heads)
+        k = rearrange(self.k_proj(x), "b s (h d) -> b h s d", h=self.n_heads)
+        v = rearrange(self.v_proj(x), "b s (h d) -> b h s d", h=self.n_heads)
+
+        # Build RoPE-rotated and unrotated views of Q/K. Note: RoPE acts on
+        # the leading rope_fraction dims only when partial RoPE is configured.
+        q_rope, k_rope = self.rope(q, k)
+        q_nope, k_nope = q, k
+
+        # Apply the shared QK norm to both views (preserves the existing
+        # ordering where RoPE is applied before QK norm).
+        q_rope, k_rope = self._apply_qk_norm(q_rope, k_rope)
+        q_nope, k_nope = self._apply_qk_norm(q_nope, k_nope)
+
+        # Score matrices for intra-chain (RoPE) and inter-chain (no-position)
+        scores_intra = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
+        scores_inter = torch.matmul(q_nope, k_nope.transpose(-2, -1)) * self.scale
+
+        intra_mask = self._create_chain_mask(chain_ids)
+        merged_scores = torch.where(intra_mask, scores_intra, scores_inter)
+
+        padding_mask = self._create_padding_mask(attention_mask, x.dtype)
+        if padding_mask is not None:
+            merged_scores = merged_scores + padding_mask
+
+        attn_weights = F.softmax(merged_scores, dim=-1)
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        attn_weights = self.dropout(attn_weights)
+
+        output = torch.matmul(attn_weights, v)
+
         output = rearrange(output, "b h s d -> b s (h d)")
         output = self.out_proj(output)
 

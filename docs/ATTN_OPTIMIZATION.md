@@ -720,3 +720,28 @@ The implementation is ready for pilot runs when:
 - FLOPs reporting changes when switching among standard, separate-QKV, and shared-QKV modes;
 - targeted tests pass.
 
+## Pilot Outcomes (Summary)
+
+The 4-variant 10k-step pilot has been executed; full data and trajectories
+live in `docs/ATTN_OPTIMIZATION_LOG.md`. Headline result at `model=small`,
+4× A6000, bf16, batch=128 effective, seed=42:
+
+| Variant | Non-emb params | eval loss | eval masked acc | wall-clock |
+|---|---|---|---|---|
+| separate-QKV chain-aware | 24.0M | 0.2912 | 92.71% | 38.9 min |
+| **shared-QKV chain-aware** | **19.3M** | **0.2922** | **92.60%** | **32.8 min** |
+| standard MHA (same size) | 19.3M | 0.2933 | 92.57% | 28.9 min |
+| param-matched MHA (d=288) | 23.9M | 0.2909 | 92.53% | 29.8 min |
+
+Shared-QKV chain-aware attention satisfies all three "prefer shared-QKV"
+criteria (within 1–2% of separate on val loss, faster/smaller, beats
+same-size standard MHA), so it is the recommended chain-aware variant for
+this size class. Whether chain-aware attention should remain the
+project-wide default versus parameter-matched standard MHA is ambiguous at
+this budget — eval loss favors MHA by 0.1%, eval masked accuracy favors
+chain-aware by 0.18 pp. A 50k–100k-step, multi-seed stage-2 with
+contact-prediction on coords-bearing eval data is needed before flipping
+the project-wide default. The `separate` dataclass default is kept for
+checkpoint compatibility; flipping the bundled Hydra defaults to `shared`
+should wait for stage-2 confirmation.
+

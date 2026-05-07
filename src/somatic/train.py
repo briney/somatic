@@ -233,6 +233,9 @@ def run_training(
         attention_dropout=cfg.model.attention_dropout,
         embedding_dropout=cfg.model.embedding_dropout,
         use_chain_aware_attention=cfg.model.use_chain_aware_attention,
+        chain_aware_projection_mode=cfg.model.get(
+            "chain_aware_projection_mode", "separate"
+        ),
         norm_type=cfg.model.norm_type,
         pre_norm=cfg.model.pre_norm,
         post_norm=cfg.model.post_norm,

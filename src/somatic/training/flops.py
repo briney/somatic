@@ -25,19 +25,26 @@ class FLOPsConfig:
 def compute_model_flops_per_token(config: SomaticConfig) -> int:
     """Compute FLOPs per token for forward pass.
 
-    Formula breakdown per transformer layer:
+    Per-layer FLOPs/token are decomposed into three attention factors that
+    differ across modes:
 
-    Attention:
-    - Standard MHA: Q, K, V projections = 3 * 2 * d_model^2 per token
-    - Chain-aware attention: doubles QKV = 6 * 2 * d_model^2 per token
-    - QK^T matmul = 2 * seq_len * d_model per token
-    - Attention @ V = 2 * seq_len * d_model per token
-    - Output projection = 2 * d_model^2 per token
+    - ``projection_factor``: number of Q/K/V projection matmuls per layer.
+    - ``score_factor``: number of dense QK^T score matmuls per layer.
+    - ``value_factor``: number of (attn @ V) value matmuls per layer.
 
-    FFN (SwiGLU):
-    - Fused gate+up = 2 * d_model * (2 * d_ffn) per token
-    - Down projection = 2 * d_ffn * d_model per token
-    - Total = 6 * d_model * d_ffn per token
+    Mode-specific factors:
+
+    - Standard MHA: projection=3, score=1, value=1.
+    - Separate-QKV chain-aware attention: projection=6, score=2, value=2.
+    - Shared-QKV chain-aware attention: projection=3, score=2, value=1.
+
+    Per-layer FLOPs/token:
+
+    - Projections: ``projection_factor * 2 * d_model^2``
+    - QK^T: ``score_factor * 2 * seq_len * d_model``
+    - Attn @ V: ``value_factor * 2 * seq_len * d_model``
+    - Output projection: ``2 * d_model^2``
+    - SwiGLU FFN: ``6 * d_model * d_ffn``
 
     Parameters
     ----------
@@ -55,36 +62,34 @@ def compute_model_flops_per_token(config: SomaticConfig) -> int:
     seq_len = config.max_seq_len
     vocab_size = config.vocab_size
 
-    # QKV projection factor: 1x for standard attention, 2x for chain-aware
-    # Chain-aware attention has separate QKV projections for self and cross attention
-    qkv_factor = 2 if config.use_chain_aware_attention else 1
+    if not config.use_chain_aware_attention:
+        projection_factor, score_factor, value_factor = 3, 1, 1
+    elif config.chain_aware_projection_mode == "shared":
+        projection_factor, score_factor, value_factor = 3, 2, 1
+    else:  # "separate"
+        projection_factor, score_factor, value_factor = 6, 2, 2
 
     flops_per_layer = 0
 
-    # Attention QKV projections: qkv_factor * 3 * 2 * d_model^2 per token
-    # Each linear layer: 2 * input * output FLOPs (multiply-add pairs)
-    # 3 projections (Q, K, V) each with d_model -> d_model
-    flops_per_layer += qkv_factor * 3 * 2 * d_model * d_model
+    # Q/K/V projections (each linear: 2 * input * output FLOPs per token).
+    flops_per_layer += projection_factor * 2 * d_model * d_model
 
-    # Attention QK^T and Attn@V: 2 * 2 * seq_len * d_model per token
-    # QK^T: 2 * seq_len * d_model (query @ key.T per position)
-    # Attn@V: 2 * seq_len * d_model (attention weights @ values per position)
-    flops_per_layer += 4 * seq_len * d_model
+    # QK^T scores (per token, dense over seq_len keys).
+    flops_per_layer += score_factor * 2 * seq_len * d_model
 
-    # Output projection: 2 * d_model^2 per token
-    # Linear layer: d_model -> d_model
+    # Attn @ V (per token, dense over seq_len values).
+    flops_per_layer += value_factor * 2 * seq_len * d_model
+
+    # Output projection: d_model -> d_model.
     flops_per_layer += 2 * d_model * d_model
 
-    # FFN (SwiGLU): 3 * 2 * d_model * d_ffn per token
-    # SwiGLU has 3 weight matrices: gate_up (d_model -> 2*d_ffn) and down (d_ffn -> d_model)
-    # Equivalent to: 2 * d_model * 2*d_ffn + 2 * d_ffn * d_model = 6 * d_model * d_ffn
+    # FFN (SwiGLU): gate_up (d_model -> 2*d_ffn) and down (d_ffn -> d_model)
+    # collapse to 6 * d_model * d_ffn FLOPs per token.
     flops_per_layer += 6 * d_model * d_ffn
 
-    # Total for all layers
     total_flops = n_layers * flops_per_layer
 
-    # LM head: 2 * d_model * vocab_size per token
-    # Linear layer: d_model -> vocab_size
+    # LM head: d_model -> vocab_size.
     total_flops += 2 * d_model * vocab_size
 
     return total_flops

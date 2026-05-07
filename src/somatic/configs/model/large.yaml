@@ -21,6 +21,10 @@ attention_dropout: 0.1
 embedding_dropout: 0.1
 
 use_chain_aware_attention: true
+# Projection variant for chain-aware attention; ignored when
+# use_chain_aware_attention=false. One of: "separate" (current default,
+# separate Q/K/V per self/cross path) or "shared" (single shared Q/K/V).
+chain_aware_projection_mode: separate
 
 # Normalization options
 norm_type: layernorm # "layernorm" or "rmsnorm"
