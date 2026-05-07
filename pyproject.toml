@@ -23,8 +23,26 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "rich>=13.7",
+    "accelerate",
+    "click",
+    "einops",
+    "hydra-core",
+    "numpy",
+    "omegaconf",
+    "pandas",
+    "pyarrow",
+    "pyyaml",
+    "rich",
+    "tokenizers",
+    "torch",
+    "transformers",
 ]
+
+[project.optional-dependencies]
+wandb = ["wandb"]
+structures = ["biopython"]
+probes = ["scikit-learn"]
+all = ["wandb", "biopython", "scikit-learn"]
 
 [project.scripts]
 somatic = "somatic.cli:main"
