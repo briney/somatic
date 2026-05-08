@@ -97,6 +97,23 @@ def _load_config(
         return compose(config_name=config_name, overrides=override_list)
 
 
+_ALLOWED_MIXED_PRECISION = {"auto", "no", "fp16", "bf16", "fp8"}
+
+
+def _validate_mixed_precision(value: str) -> None:
+    """Validate `train.mixed_precision` against the allowed Accelerate values.
+
+    "auto" is a somatic-specific sentinel that defers to Accelerate's own
+    resolution order (`accelerate config` / `ACCELERATE_MIXED_PRECISION` /
+    `accelerate launch --mixed_precision`).
+    """
+    if value not in _ALLOWED_MIXED_PRECISION:
+        allowed = ", ".join(sorted(_ALLOWED_MIXED_PRECISION))
+        raise ValueError(
+            f"train.mixed_precision must be one of {{{allowed}}}, got {value!r}"
+        )
+
+
 def _build_masking_frequency_config(cfg: DictConfig) -> MaskingFrequencyConfig:
     """Build MaskingFrequencyConfig from Hydra config.
 
@@ -186,9 +203,15 @@ def run_training(
     # ==================================================================
 
     # 3. Create Accelerator (NOW all processes are in sync with same state)
-    accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.train.gradient_accumulation_steps,
-    )
+    mp = cfg.train.mixed_precision
+    _validate_mixed_precision(mp)
+    accel_kwargs: dict = {
+        "gradient_accumulation_steps": cfg.train.gradient_accumulation_steps,
+    }
+    # "auto" defers to accelerate's own resolution (env / config file / launch flag).
+    if mp != "auto":
+        accel_kwargs["mixed_precision"] = mp
+    accelerator = Accelerator(**accel_kwargs)
     is_main = accelerator.is_main_process
 
     # 4. wandb login (early, but AFTER Accelerator - main process only)
@@ -233,6 +256,9 @@ def run_training(
         attention_dropout=cfg.model.attention_dropout,
         embedding_dropout=cfg.model.embedding_dropout,
         use_chain_aware_attention=cfg.model.use_chain_aware_attention,
+        chain_aware_projection_mode=cfg.model.get(
+            "chain_aware_projection_mode", "separate"
+        ),
         norm_type=cfg.model.norm_type,
         pre_norm=cfg.model.pre_norm,
         post_norm=cfg.model.post_norm,

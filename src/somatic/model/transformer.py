@@ -43,9 +43,17 @@ class SomaticConfig:
     attention_dropout: float = 0.1
     embedding_dropout: float = 0.1
 
-    # If True, use ChainAwareAttention (MINT-style hybrid attention)
+    # If True, use chain-aware attention (MINT-style hybrid attention)
     # If False, use standard MultiHeadAttention
     use_chain_aware_attention: bool = True
+
+    # Projection variant for chain-aware attention. Ignored when
+    # use_chain_aware_attention=False.
+    #   "separate" - current behavior: separate Q/K/V for self and cross paths
+    #   "shared"   - one shared Q/K/V projection; intra-chain pairs use RoPE
+    #                scores, inter-chain pairs use no-position scores, merged
+    #                under a single global softmax with a single value path.
+    chain_aware_projection_mode: str = "separate"
 
     # Normalization options
     norm_type: str = "layernorm"  # "layernorm" or "rmsnorm"
@@ -109,6 +117,27 @@ class SomaticConfig:
                 f"hybrid_norm must be one of {valid_hybrid_norms}, got '{self.hybrid_norm}'"
             )
 
+        # Validate chain_aware_projection_mode (always, even when chain-aware
+        # attention is disabled, so typos in configs fail loudly).
+        valid_projection_modes = {"separate", "shared"}
+        if self.chain_aware_projection_mode not in valid_projection_modes:
+            raise ValueError(
+                f"chain_aware_projection_mode must be one of {valid_projection_modes}, "
+                f"got '{self.chain_aware_projection_mode}'"
+            )
+
+        # Shared-QKV chain-aware attention does not yet support HybridNorm.
+        if (
+            self.use_chain_aware_attention
+            and self.chain_aware_projection_mode == "shared"
+            and self.hybrid_norm != "none"
+        ):
+            raise ValueError(
+                "chain_aware_projection_mode='shared' is not compatible with "
+                f"hybrid_norm='{self.hybrid_norm}'. Use hybrid_norm='none' or "
+                "chain_aware_projection_mode='separate'."
+            )
+
         # pre_norm/post_norm/qk_norm are inert when hybrid_norm is enabled, so
         # skip their validation in that case
         if self.hybrid_norm == "none":
@@ -152,6 +181,7 @@ class SomaticModel(nn.Module):
             attention_dropout=config.attention_dropout,
             max_seq_len=config.max_seq_len,
             use_chain_aware_attention=config.use_chain_aware_attention,
+            chain_aware_projection_mode=config.chain_aware_projection_mode,
             norm_type=config.norm_type,
             pre_norm=config.pre_norm,
             post_norm=config.post_norm,

@@ -5,7 +5,11 @@ from __future__ import annotations
 import torch.nn as nn
 from torch import Tensor
 
-from .attention import ChainAwareAttention, MultiHeadAttention
+from .attention import (
+    ChainAwareAttention,
+    MultiHeadAttention,
+    SharedQKVChainAwareAttention,
+)
 from .ffn import FusedSwiGLUFFN
 from .normalization import create_norm_layer
 
@@ -34,6 +38,7 @@ class TransformerBlock(nn.Module):
         max_seq_len: int = 512,
         layer_norm_eps: float = 1e-6,
         use_chain_aware_attention: bool = True,
+        chain_aware_projection_mode: str = "separate",
         norm_type: str = "layernorm",
         pre_norm: bool = True,
         post_norm: bool = False,
@@ -75,7 +80,16 @@ class TransformerBlock(nn.Module):
                 self.ffn_post_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
 
         # Select attention type based on config
-        attention_cls = ChainAwareAttention if use_chain_aware_attention else MultiHeadAttention
+        if not use_chain_aware_attention:
+            attention_cls = MultiHeadAttention
+        elif chain_aware_projection_mode == "separate":
+            attention_cls = ChainAwareAttention
+        elif chain_aware_projection_mode == "shared":
+            attention_cls = SharedQKVChainAwareAttention
+        else:
+            raise ValueError(
+                f"Unknown chain_aware_projection_mode: '{chain_aware_projection_mode}'"
+            )
         self.attention = attention_cls(
             d_model=d_model,
             n_heads=n_heads,
@@ -172,6 +186,7 @@ class TransformerEncoder(nn.Module):
         attention_dropout: float = 0.0,
         max_seq_len: int = 512,
         use_chain_aware_attention: bool = True,
+        chain_aware_projection_mode: str = "separate",
         norm_type: str = "layernorm",
         pre_norm: bool = True,
         post_norm: bool = False,
@@ -196,6 +211,7 @@ class TransformerEncoder(nn.Module):
                     max_seq_len=max_seq_len,
                     layer_norm_eps=layer_norm_eps,
                     use_chain_aware_attention=use_chain_aware_attention,
+                    chain_aware_projection_mode=chain_aware_projection_mode,
                     norm_type=norm_type,
                     pre_norm=pre_norm,
                     post_norm=post_norm,

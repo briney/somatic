@@ -3,7 +3,12 @@
 import pytest
 import torch
 
-from somatic.model.attention import ChainAwareAttention, MultiHeadAttention
+from somatic.model.attention import (
+    ChainAwareAttention,
+    MultiHeadAttention,
+    SharedQKVChainAwareAttention,
+)
+from somatic.model.layers import TransformerBlock
 from somatic.model.normalization import LearnedQKScale, QKNormModule, QKVNormModule
 from somatic.model.transformer import SomaticConfig, SomaticModel
 
@@ -505,3 +510,300 @@ class TestRopeFractionPropagation:
         chain_ids = torch.zeros(2, 8, dtype=torch.long)
         out = model(token_ids, chain_ids)
         out["logits"].sum().backward()
+
+
+class TestSharedQKVChainAwareAttention:
+    """Forward shape, masking, and weight tests for SharedQKVChainAwareAttention."""
+
+    @pytest.fixture
+    def attention(self):
+        return SharedQKVChainAwareAttention(
+            d_model=64, n_heads=4, head_dim=16, dropout=0.0, max_seq_len=128
+        )
+
+    def _two_chain_ids(self, batch: int, seq_len: int) -> torch.Tensor:
+        return torch.cat(
+            [
+                torch.zeros(batch, seq_len // 2),
+                torch.ones(batch, seq_len // 2),
+            ],
+            dim=1,
+        ).long()
+
+    def test_forward_shape(self, attention):
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = self._two_chain_ids(batch, seq_len)
+
+        out = attention(x, chain_ids)
+        assert out.shape == x.shape
+        assert not torch.isnan(out).any()
+
+    def test_padding_mask_no_nans(self, attention):
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = self._two_chain_ids(batch, seq_len)
+        attention_mask = torch.ones(batch, seq_len)
+        attention_mask[:, -5:] = 0
+
+        out = attention(x, chain_ids, attention_mask=attention_mask)
+        assert out.shape == x.shape
+        assert not torch.isnan(out).any()
+
+    def test_three_chains(self, attention):
+        batch, seq_len, d_model = 2, 30, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = torch.cat(
+            [
+                torch.zeros(batch, 10),
+                torch.ones(batch, 10),
+                torch.full((batch, 10), 2),
+            ],
+            dim=1,
+        ).long()
+        out = attention(x, chain_ids)
+        assert out.shape == x.shape
+
+    def test_attention_weights_shape_and_rows(self, attention):
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = self._two_chain_ids(batch, seq_len)
+        attention.eval()
+        out, attn_weights = attention(x, chain_ids, need_weights=True)
+        assert out.shape == x.shape
+        assert attn_weights.shape == (batch, 4, seq_len, seq_len)
+        row_sums = attn_weights.sum(dim=-1)
+        assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-5)
+
+    def test_deterministic_without_dropout(self, attention):
+        batch, seq_len, d_model = 2, 32, 64
+        x = torch.randn(batch, seq_len, d_model)
+        chain_ids = self._two_chain_ids(batch, seq_len)
+        attention.eval()
+        out1 = attention(x, chain_ids)
+        out2 = attention(x, chain_ids)
+        assert torch.allclose(out1, out2)
+
+    def test_hybrid_norm_rejected(self):
+        with pytest.raises(ValueError, match="HybridNorm"):
+            SharedQKVChainAwareAttention(
+                d_model=64, n_heads=4, head_dim=16, hybrid_norm=True,
+            )
+
+
+class TestSharedQKVEquivalence:
+    """Weight-tying equivalence between MHA and SharedQKVChainAwareAttention."""
+
+    def _copy_weights(
+        self, src: MultiHeadAttention, dst: SharedQKVChainAwareAttention
+    ) -> None:
+        dst.q_proj.weight.data.copy_(src.q_proj.weight.data)
+        dst.k_proj.weight.data.copy_(src.k_proj.weight.data)
+        dst.v_proj.weight.data.copy_(src.v_proj.weight.data)
+        dst.out_proj.weight.data.copy_(src.out_proj.weight.data)
+
+    def test_same_chain_equivalence(self):
+        """All-same-chain inputs should match standard MHA exactly."""
+        kw = dict(d_model=64, n_heads=4, head_dim=16, dropout=0.0, max_seq_len=128)
+        mha = MultiHeadAttention(**kw)
+        shared = SharedQKVChainAwareAttention(**kw)
+        self._copy_weights(mha, shared)
+
+        mha.eval()
+        shared.eval()
+        torch.manual_seed(0)
+        batch, seq_len = 2, 32
+        x = torch.randn(batch, seq_len, kw["d_model"])
+        chain_ids = torch.zeros(batch, seq_len, dtype=torch.long)
+        # Use need_weights=True for both to keep manual-vs-SDPA consistency
+        out_mha, _ = mha(x, chain_ids, need_weights=True)
+        out_shared, _ = shared(x, chain_ids, need_weights=True)
+        assert torch.allclose(out_mha, out_shared, atol=1e-5)
+
+    def test_nope_equivalence_with_mixed_chains(self):
+        """rope_fraction=0.0 makes intra/inter scores identical."""
+        kw = dict(
+            d_model=64, n_heads=4, head_dim=16,
+            dropout=0.0, max_seq_len=128, rope_fraction=0.0,
+        )
+        mha = MultiHeadAttention(**kw)
+        shared = SharedQKVChainAwareAttention(**kw)
+        self._copy_weights(mha, shared)
+
+        mha.eval()
+        shared.eval()
+        torch.manual_seed(0)
+        batch, seq_len = 2, 32
+        x = torch.randn(batch, seq_len, kw["d_model"])
+        chain_ids = torch.cat(
+            [torch.zeros(batch, seq_len // 2), torch.ones(batch, seq_len // 2)],
+            dim=1,
+        ).long()
+        out_mha, _ = mha(x, chain_ids, need_weights=True)
+        out_shared, _ = shared(x, chain_ids, need_weights=True)
+        assert torch.allclose(out_mha, out_shared, atol=1e-5)
+
+
+class TestAttentionDispatch:
+    """TransformerBlock dispatches the right attention class based on config."""
+
+    def test_default_is_separate_chain_aware(self):
+        block = TransformerBlock(d_model=32, n_heads=2, head_dim=16, d_ffn=64)
+        assert isinstance(block.attention, ChainAwareAttention)
+
+    def test_use_chain_aware_false_is_mha(self):
+        block = TransformerBlock(
+            d_model=32,
+            n_heads=2,
+            head_dim=16,
+            d_ffn=64,
+            use_chain_aware_attention=False,
+        )
+        assert isinstance(block.attention, MultiHeadAttention)
+
+    def test_shared_mode_dispatch(self):
+        block = TransformerBlock(
+            d_model=32,
+            n_heads=2,
+            head_dim=16,
+            d_ffn=64,
+            use_chain_aware_attention=True,
+            chain_aware_projection_mode="shared",
+        )
+        assert isinstance(block.attention, SharedQKVChainAwareAttention)
+
+    def test_invalid_projection_mode_raises_at_block(self):
+        with pytest.raises(ValueError, match="chain_aware_projection_mode"):
+            TransformerBlock(
+                d_model=32,
+                n_heads=2,
+                head_dim=16,
+                d_ffn=64,
+                use_chain_aware_attention=True,
+                chain_aware_projection_mode="bogus",
+            )
+
+
+class TestSharedQKVConfig:
+    """SomaticConfig validation and end-to-end dispatch via SomaticModel."""
+
+    def test_invalid_projection_mode_raises(self):
+        with pytest.raises(ValueError, match="chain_aware_projection_mode"):
+            SomaticConfig(chain_aware_projection_mode="bogus")
+
+    def test_shared_with_hybrid_norm_raises(self):
+        with pytest.raises(ValueError, match="shared"):
+            SomaticConfig(
+                chain_aware_projection_mode="shared", hybrid_norm="standard"
+            )
+
+    def test_shared_without_chain_aware_does_not_raise(self):
+        # Mode is ignored when chain-aware attention is disabled.
+        config = SomaticConfig(
+            d_model=32,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=16,
+            use_chain_aware_attention=False,
+            chain_aware_projection_mode="shared",
+        )
+        model = SomaticModel(config)
+        for block in model.encoder.layers:
+            assert isinstance(block.attention, MultiHeadAttention)
+
+    def test_shared_model_blocks_are_shared(self):
+        config = SomaticConfig(
+            d_model=32,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=16,
+            chain_aware_projection_mode="shared",
+        )
+        model = SomaticModel(config)
+        for block in model.encoder.layers:
+            assert isinstance(block.attention, SharedQKVChainAwareAttention)
+
+    def test_legacy_config_dict_missing_projection_mode(self):
+        # Old serialized configs without the new field default to "separate".
+        d = {"vocab_size": 32, "d_model": 64, "n_layers": 2, "n_heads": 2}
+        config = SomaticConfig(**d)
+        assert config.chain_aware_projection_mode == "separate"
+
+    def test_save_load_roundtrip_shared(self, tmp_path):
+        config = SomaticConfig(
+            d_model=32,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=16,
+            dropout=0.0,
+            attention_dropout=0.0,
+            embedding_dropout=0.0,
+            chain_aware_projection_mode="shared",
+        )
+        model = SomaticModel(config)
+        save_path = tmp_path / "shared_model.pt"
+        model.save_pretrained(str(save_path))
+
+        loaded = SomaticModel.from_pretrained(str(save_path))
+        assert loaded.config.chain_aware_projection_mode == "shared"
+        for block in loaded.encoder.layers:
+            assert isinstance(block.attention, SharedQKVChainAwareAttention)
+
+        model.eval()
+        loaded.eval()
+        token_ids = torch.randint(0, config.vocab_size, (2, 8))
+        chain_ids = torch.zeros(2, 8, dtype=torch.long)
+        with torch.no_grad():
+            out_a = model(token_ids, chain_ids)["logits"]
+            out_b = loaded(token_ids, chain_ids)["logits"]
+        assert torch.allclose(out_a, out_b)
+
+
+class TestAttentionTrainingSmoke:
+    """Tiny forward+backward+step on each attention mode."""
+
+    @pytest.mark.parametrize(
+        "config_kwargs",
+        [
+            dict(use_chain_aware_attention=False),
+            dict(
+                use_chain_aware_attention=True,
+                chain_aware_projection_mode="separate",
+            ),
+            dict(
+                use_chain_aware_attention=True,
+                chain_aware_projection_mode="shared",
+            ),
+        ],
+    )
+    def test_forward_backward_step(self, config_kwargs):
+        config = SomaticConfig(
+            d_model=32,
+            n_layers=2,
+            n_heads=2,
+            max_seq_len=16,
+            dropout=0.0,
+            attention_dropout=0.0,
+            embedding_dropout=0.0,
+            **config_kwargs,
+        )
+        model = SomaticModel(config)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        token_ids = torch.randint(0, config.vocab_size, (2, 8))
+        chain_ids = torch.cat(
+            [torch.zeros(2, 4), torch.ones(2, 4)], dim=1
+        ).long()
+        targets = torch.randint(0, config.vocab_size, (2, 8))
+
+        model.train()
+        for _ in range(2):
+            optimizer.zero_grad()
+            logits = model(token_ids, chain_ids)["logits"]
+            loss = torch.nn.functional.cross_entropy(
+                logits.reshape(-1, config.vocab_size), targets.reshape(-1)
+            )
+            assert torch.isfinite(loss)
+            loss.backward()
+            optimizer.step()
+

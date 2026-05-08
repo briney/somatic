@@ -1,6 +1,11 @@
 """Somatic model components."""
 
-from .attention import BaseAttention, ChainAwareAttention, MultiHeadAttention
+from .attention import (
+    BaseAttention,
+    ChainAwareAttention,
+    MultiHeadAttention,
+    SharedQKVChainAwareAttention,
+)
 from .embeddings import SomaticEmbedding, TokenEmbedding
 from .ffn import FusedSwiGLUFFN
 from .layers import PreNormBlock, TransformerBlock, TransformerEncoder
@@ -23,6 +28,7 @@ __all__ = [
     "BaseAttention",
     "ChainAwareAttention",
     "MultiHeadAttention",
+    "SharedQKVChainAwareAttention",
     "FusedSwiGLUFFN",
     "TokenEmbedding",
     "SomaticEmbedding",

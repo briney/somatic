@@ -101,6 +101,7 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 | `attention_dropout` | float | `0.1` | Attention-specific dropout |
 | `embedding_dropout` | float | `0.1` | Embedding layer dropout |
 | `use_chain_aware_attention` | bool | `true` | Enable chain-aware (MINT-style) attention |
+| `chain_aware_projection_mode` | string | `separate` | Chain-aware projection variant: `separate` (Q/K/V per self/cross path) or `shared` (single Q/K/V). Ignored when `use_chain_aware_attention=false`. |
 | `norm_type` | string | `layernorm` | Normalization type: `layernorm` \| `rmsnorm` |
 | `pre_norm` | bool | `true` | Use pre-normalization (recommended) |
 | `post_norm` | bool | `false` | Use post-normalization |
@@ -118,6 +119,10 @@ somatic train model.d_model=512 model.n_layers=32
 
 # Disable chain-aware attention
 somatic train model.use_chain_aware_attention=false
+
+# Use shared-QKV chain-aware attention (one Q/K/V projection, chain-aware
+# routing through merged-softmax). Ignored when use_chain_aware_attention=false.
+somatic train model=small model.chain_aware_projection_mode=shared
 ```
 
 ---
@@ -135,7 +140,7 @@ Two variants: `default` and `debug`.
 | `batch_size` | int | `32` | `4` | Training batch size |
 | `gradient_accumulation_steps` | int | `1` | `1` | Gradient accumulation steps |
 | `max_grad_norm` | float | `1.0` | `1.0` | Gradient clipping threshold |
-| `mixed_precision` | string | `"no"` | `"no"` | Mixed precision mode |
+| `mixed_precision` | string | `"auto"` | `"auto"` | `auto` \| `no` \| `fp16` \| `bf16` \| `fp8`. `auto` defers to `accelerate config` / `ACCELERATE_MIXED_PRECISION` / `accelerate launch --mixed_precision`; any other value overrides them. |
 
 #### Optimizer (`train.optimizer`)
 
