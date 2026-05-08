@@ -25,4 +25,4 @@ checkpoint_dir: ${output_dir}/checkpoints
 keep_last_n_checkpoints: 2
 save_best: false
 
-mixed_precision: "no"
+mixed_precision: "auto"  # auto | no | fp16 | bf16 | fp8 ("auto" = defer to accelerate config)

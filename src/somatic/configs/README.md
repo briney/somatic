@@ -140,7 +140,7 @@ Two variants: `default` and `debug`.
 | `batch_size` | int | `32` | `4` | Training batch size |
 | `gradient_accumulation_steps` | int | `1` | `1` | Gradient accumulation steps |
 | `max_grad_norm` | float | `1.0` | `1.0` | Gradient clipping threshold |
-| `mixed_precision` | string | `"no"` | `"no"` | Mixed precision mode |
+| `mixed_precision` | string | `"auto"` | `"auto"` | `auto` \| `no` \| `fp16` \| `bf16` \| `fp8`. `auto` defers to `accelerate config` / `ACCELERATE_MIXED_PRECISION` / `accelerate launch --mixed_precision`; any other value overrides them. |
 
 #### Optimizer (`train.optimizer`)
 

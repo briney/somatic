@@ -70,8 +70,9 @@ class TrainingConfig:
     # Reproducibility
     seed: int = 42
 
-    # Mixed precision
-    mixed_precision: str = "no"
+    # Mixed precision: "auto" | "no" | "fp16" | "bf16" | "fp8"
+    # "auto" defers to accelerate's own resolution (env / config file / launch flag).
+    mixed_precision: str = "auto"
 
 
 class Trainer:
@@ -95,11 +96,13 @@ class Trainer:
         if accelerator is not None:
             self.accelerator = accelerator
         else:
-            # Let accelerate handle mixed_precision from its config (accelerate config)
-            # rather than overriding with our config value
-            self.accelerator = Accelerator(
-                gradient_accumulation_steps=config.gradient_accumulation_steps,
-            )
+            # "auto" defers to accelerate's own resolution; any other value is authoritative.
+            accel_kwargs: dict = {
+                "gradient_accumulation_steps": config.gradient_accumulation_steps,
+            }
+            if config.mixed_precision != "auto":
+                accel_kwargs["mixed_precision"] = config.mixed_precision
+            self.accelerator = Accelerator(**accel_kwargs)
 
         self.optimizer = create_optimizer(
             model,
