@@ -2,9 +2,8 @@ vocab_size: 32
 padding_idx: 1
 
 # "deep" variant
-# 113M parameters (if standard MHA)
-# 141M parameters (if chain-aware attention)
-# width:depth ratio = ~7
+# 141M parameters (113M if standard MHA or shared QKV)
+# width:depth ratio = 6
 d_model: 384
 n_layers: 64
 n_heads: 6
@@ -39,14 +38,16 @@ hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/po
 
 # alternative shape variants
 #
-# "wide"
-# ~142M params (~113M params with standard MHA)
+# wide
+# 142M params (113M with standard MHA or shared QKV)
+# width:depth ratio =  48
 # d_model: 768
 # n_heads: 12
-# n_layers: 14
+# n_layers: 16
 #
-# "standard"
-# ~144M params (~115M params with standard MHA)
+# standard
+# 144M params (115M params with standard MHA or shared QKV)
+# width:depth ratio = 14
 # d_model: 512
 # n_heads: 8
 # n_layers: 36
