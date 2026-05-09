@@ -1,0 +1,65 @@
+vocab_size: 32
+padding_idx: 1
+
+# very deep (width:depth ratio = 3.3)
+# 1.2B parameters (972M if standard MHA or shared QKV)
+d_model: 640
+n_layers: 196
+n_heads: 10
+d_ffn: null
+ffn_multiplier: null
+
+max_seq_len: 320
+
+# Fraction of head_dim that gets RoPE.
+# 1.0 = full RoPE (default); 0.0 = NoPE; values in between = partial RoPE
+# (first rope_fraction of head_dim is rotated, remainder is un-rotated).
+rope_fraction: 1.0
+
+dropout: 0.1
+attention_dropout: 0.1
+embedding_dropout: 0.1
+
+use_chain_aware_attention: true
+# Projection variant for chain-aware attention; ignored when
+# use_chain_aware_attention=false. One of: "separate" (current default,
+# separate Q/K/V per self/cross path) or "shared" (single shared Q/K/V).
+chain_aware_projection_mode: separate
+
+# Normalization options
+norm_type: layernorm # "layernorm" or "rmsnorm"
+pre_norm: true
+post_norm: false
+qk_norm: none # "none", "norm", or "learned_scale"
+layer_norm_eps: 1e-6
+hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/post/qk_norm (Zhuo et al., 2025)
+
+
+#-------------------------------
+#    other configurations
+#-------------------------------
+
+# deep (width:depth ratio = 5.6)
+# 1.2B params (963M if standard MHA or shared QKV)
+# width:depth ratio = 6
+# d_model: 768
+# n_layers: 136
+# n_heads: 12
+
+# standard (width:depth ratio = 13.5)
+# 1.2B params (962M if standard MHA or shared QKV)
+# d_model: 1024
+# n_layers: 76
+# n_heads: 16
+
+# wide (width:depth ratio = 25)
+# 1.2B params (991M if standard MHA or shared QKV)
+# d_model: 1280
+# n_layers: 50
+# n_heads: 20
+
+# very wide (width:depth ratio = 50)
+# 1.2B params (963M if standard MHA or shared QKV)
+# d_model: 1536
+# n_layers: 34
+# n_heads: 24
