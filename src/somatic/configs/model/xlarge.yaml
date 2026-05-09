@@ -1,11 +1,11 @@
 vocab_size: 32
 padding_idx: 1
 
-# very deep (width:depth ratio = 3)
-# 648M parameters (521M if standard MHA or shared QKV)
-d_model: 512
-n_layers: 162
-n_heads: 8
+# very deep (width:depth ratio = 3.3)
+# 1.2B parameters (972M if standard MHA or shared QKV)
+d_model: 640
+n_layers: 196
+n_heads: 10
 d_ffn: null
 ffn_multiplier: null
 
@@ -39,27 +39,27 @@ hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/po
 #    other configurations
 #-------------------------------
 
-# deep (width:depth ratio = 6)
-# 650M params (520M if standard MHA or shared QKV)
+# deep (width:depth ratio = 5.6)
+# 1.2B params (963M if standard MHA or shared QKV)
 # width:depth ratio = 6
-# d_model: 640
-# n_layers: 105
-# n_heads: 10
-
-# standard (width:depth ratio = 10)
-# 655M params (524M if standard MHA or shared QKV)
 # d_model: 768
-# n_layers: 74
+# n_layers: 136
 # n_heads: 12
 
-# wide (width:depth ratio = 25)
-# 648M params (519M if standard MHA or shared QKV)
+# standard (width:depth ratio = 13.5)
+# 1.2B params (962M if standard MHA or shared QKV)
 # d_model: 1024
-# n_layers: 41
+# n_layers: 76
 # n_heads: 16
 
-# very wide (width:depth ratio = 50)
-# 643M params (516M if standard MHA or shared QKV)
+# wide (width:depth ratio = 25)
+# 1.2B params (991M if standard MHA or shared QKV)
 # d_model: 1280
-# n_layers: 26
+# n_layers: 50
 # n_heads: 20
+
+# very wide (width:depth ratio = 50)
+# 1.2B params (963M if standard MHA or shared QKV)
+# d_model: 1536
+# n_layers: 34
+# n_heads: 24
