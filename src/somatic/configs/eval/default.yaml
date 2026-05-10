@@ -5,6 +5,7 @@
 defaults:
   - masking: default
   - regions: default
+  - cross_chain_attention: default
 
 # Global metric settings (can be overridden per-dataset)
 metrics:

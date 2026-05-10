@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 
 from ..utils.progress import ProgressManager
 from .base import Metric
+from .cross_chain_config import build_cross_chain_eval_config
+from .cross_chain_eval import run_cross_chain_eval
 from .masking import EvalMasker, create_eval_masker
 from .region_config import RegionEvalConfig, build_region_eval_config
 from .region_eval import (
@@ -290,6 +292,19 @@ class Evaluator:
             except Exception as e:
                 warnings.warn(f"Region evaluation failed: {e}")
 
+        # Cross-chain attention evaluation (if enabled for this dataset).
+        # Separate unmasked forward pass that captures attention weights.
+        cc_cfg = self._get_cross_chain_config(eval_name)
+        if cc_cfg.get("enabled", False):
+            try:
+                cc_results = self._evaluate_cross_chain(
+                    eval_loader, eval_name, cc_cfg, progress=progress
+                )
+                for key, value in cc_results.items():
+                    results[f"cross_chain/{key}"] = value
+            except Exception as e:
+                warnings.warn(f"Cross-chain attention evaluation failed: {e}")
+
         self.model.train()
 
         # Clear CUDA cache to prevent memory fragmentation
@@ -366,6 +381,31 @@ class Evaluator:
         result.update(dataset_regions)
         return result
 
+    def _get_cross_chain_config(self, eval_name: str) -> dict[str, Any]:
+        """Get merged cross-chain attention eval config for a dataset.
+
+        Merges global ``eval.cross_chain_attention`` config with
+        per-dataset overrides under ``data.eval.<name>.cross_chain_attention``.
+        """
+        eval_cfg = self.cfg.get("eval", {})
+        global_cc = dict(eval_cfg.get("cross_chain_attention", {}))
+
+        data_cfg = self.cfg.get("data", {})
+        eval_datasets = data_cfg.get("eval", {})
+
+        if isinstance(eval_datasets, str):
+            return global_cc
+
+        dataset_cfg = eval_datasets.get(eval_name, {})
+        if isinstance(dataset_cfg, str):
+            return global_cc
+
+        dataset_cc = dict(dataset_cfg.get("cross_chain_attention", {}))
+
+        result = global_cc.copy()
+        result.update(dataset_cc)
+        return result
+
     def _show_progress(self) -> bool:
         """Check if progress bars should be shown."""
         return self.accelerator is None or self.accelerator.is_local_main_process
@@ -439,6 +479,24 @@ class Evaluator:
                 show_progress=show_progress,
                 progress=progress,
             )
+
+    def _evaluate_cross_chain(
+        self,
+        eval_loader: DataLoader,
+        eval_name: str,
+        cc_cfg: dict[str, Any],
+        progress: ProgressManager | None = None,
+    ) -> dict[str, float]:
+        """Run cross-chain attention evaluation."""
+        config = build_cross_chain_eval_config(cc_cfg)
+        return run_cross_chain_eval(
+            model=self.model,
+            eval_loader=eval_loader,
+            config=config,
+            accelerator=self.accelerator,
+            show_progress=self._show_progress(),
+            progress=progress,
+        )
 
     def evaluate_all(
         self,

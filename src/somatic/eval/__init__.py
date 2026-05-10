@@ -30,6 +30,7 @@ Example usage:
 """
 
 from .base import Metric, MetricBase
+from .cross_chain_config import CrossChainEvalConfig, build_cross_chain_eval_config
 from .evaluator import Evaluator
 from .masking import EvalMasker, create_eval_masker
 from .per_position import PerPositionEvaluator, RegionMaskingEvaluator
@@ -63,6 +64,9 @@ __all__ = [
     # Region config
     "RegionEvalConfig",
     "build_region_eval_config",
+    # Cross-chain attention config
+    "CrossChainEvalConfig",
+    "build_cross_chain_eval_config",
     # Regions
     "AntibodyRegion",
     "CDR_REGIONS",

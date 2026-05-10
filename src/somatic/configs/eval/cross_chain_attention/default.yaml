@@ -1,0 +1,17 @@
+# Cross-chain attention evaluation
+# Runs a separate, unmasked forward pass that captures attention weights
+# and reports two scalars:
+#   - cross_chain/cross_frac     fraction of attention mass crossing chains
+#   - cross_chain/interface_frac of cross-chain mass, fraction in the
+#                                 last-N-heavy <-> first-N-light boundary
+
+enabled: false              # default off (memory cost of holding (B,H,L,L) tensors)
+
+# Boundary window size in tokens for the interface metric (default 5)
+interface_n: 5
+
+# Sub-batch size used inside this eval. The eval loader's batches are
+# sliced into chunks of this size to bound peak GPU memory used by the
+# per-layer attention tensors. For very large/deep models, drop this to
+# 4 or 2.
+chunk_size: 8
