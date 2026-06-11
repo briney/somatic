@@ -31,4 +31,8 @@ save_best: true
 
 mixed_precision: "auto"  # auto | no | fp16 | bf16 | fp8 ("auto" = defer to accelerate config)
 
+# torch.compile (applied after accelerate.prepare, with dynamic=True)
+compile: false
+compile_mode: "default"  # default | reduce-overhead | max-autotune
+
 # masking_frequency is now composed from train/masking_frequency/default.yaml

@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from ..eval import Evaluator
 
 
+_VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
+
+
 @dataclass
 class TrainingConfig:
     """Configuration for training."""
@@ -73,6 +76,26 @@ class TrainingConfig:
     # Mixed precision: "auto" | "no" | "fp16" | "bf16" | "fp8"
     # "auto" defers to accelerate's own resolution (env / config file / launch flag).
     mixed_precision: str = "auto"
+
+    # torch.compile
+    # Compiles the model with torch.compile AFTER accelerate.prepare (so accelerate
+    # wraps the raw model with DDP first; see Trainer.__init__ for the ordering
+    # rationale). Uses dynamic=True so variable per-batch sequence lengths do not
+    # trigger recompilation. Disabled by default.
+    compile: bool = False
+    # Compilation mode passed to torch.compile(mode=...).
+    # "default"          — balanced; safe for dynamic-shape training.
+    # "reduce-overhead"  — CUDA graphs; for fixed-shape inference only (conflicts
+    #                      with dynamic shapes + DDP).
+    # "max-autotune"     — longest compile, best peak throughput (e.g. on Blackwell).
+    compile_mode: str = "default"
+
+    def __post_init__(self) -> None:
+        """Validate training configuration."""
+        if self.compile_mode not in _VALID_COMPILE_MODES:
+            raise ValueError(
+                f"compile_mode must be one of {_VALID_COMPILE_MODES}, got '{self.compile_mode}'"
+            )
 
 
 class Trainer:
@@ -127,6 +150,37 @@ class Trainer:
         # Note: scheduler is intentionally NOT prepared by Accelerate.
         # AcceleratedScheduler causes 8x step rate in multi-GPU DDP training.
 
+        # Apply torch.compile AFTER accelerator.prepare so accelerate always wraps the
+        # raw model with DDP first. Compiling the DDP-wrapped model gives
+        # OptimizedModule(_orig_mod=DDP(model)), which accelerate.unwrap_model peels
+        # unambiguously. Compiling *before* prepare causes some accelerate versions to
+        # strip the compile wrapper during prepare, leaving DDP(model) with no
+        # _orig_mod — and unwrap_model then fails with KeyError: '_orig_mod' at the
+        # first eval/checkpoint. (Eval runs on the raw, uncompiled `model` reference.)
+        if config.compile:
+            # Selective activation checkpointing is incompatible with the default
+            # DDPOptimizer: it splits the compiled graph at gradient-bucket boundaries
+            # to overlap allreduce with backward, which fragments each block's AC
+            # higher-order op across subgraphs. AOT autograd's min-cut partitioner then
+            # can't honor the SAC MUST_SAVE set, so `selective` silently collapses to
+            # full recompute under DDP+compile (single-GPU is unaffected — DDPOptimizer
+            # never engages). Disabling graph-splitting keeps SAC intact; the only cost
+            # is the lost comm/compute overlap. Gate on `selective` only so `full`/`none`
+            # keep the default overlap. The flag is a process-global dynamo config.
+            if (
+                getattr(model.config, "gradient_checkpointing_mode", "none")
+                == "selective"
+            ):
+                # `from torch import _dynamo` (not `import torch._dynamo`) so the local
+                # binding is `_dynamo`, not `torch` — the latter would shadow the
+                # module-level `torch` used elsewhere in this method.
+                from torch import _dynamo
+
+                _dynamo.config.optimize_ddp = False
+            self.model = torch.compile(
+                self.model, dynamic=True, mode=config.compile_mode
+            )
+
         # Support both single eval_dataloader (legacy) and multiple eval_dataloaders
         self.eval_dataloader = (
             self.accelerator.prepare(eval_dataloader) if eval_dataloader else None
@@ -159,7 +213,13 @@ class Trainer:
             keep_last_n=config.keep_last_n_checkpoints,
             save_best=config.save_best,
         )
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        # keep_torch_compile=False peels both the DDP and torch.compile wrappers,
+        # yielding the raw SomaticModel — clean (no `_orig_mod.` prefix) state_dict
+        # keys for checkpointing and direct `.config` access. Harmless when not
+        # compiled. Without this, a compiled model would save unloadable checkpoints.
+        unwrapped_model = self.accelerator.unwrap_model(
+            self.model, keep_torch_compile=False
+        )
         self.checkpoint_manager = CheckpointManager(
             checkpoint_config,
             unwrapped_model,
@@ -190,7 +250,7 @@ class Trainer:
         self.flops_config = flops_config or FLOPsConfig()
         self.flops_tracker = FLOPsTracker(
             config=self.flops_config,
-            model_config=self.accelerator.unwrap_model(self.model).config,
+            model_config=unwrapped_model.config,
             world_size=self.accelerator.num_processes,
         )
 
