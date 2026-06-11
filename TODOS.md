@@ -220,12 +220,12 @@ implementation; this phase is repackaging + renaming + HF interfaces.
 
 Pattern: `ref: model/tokenization_oplm.py`. Move `src/somatic/tokenizer.py` here.
 
-- [ ] Rename class `Tokenizer` → `SomaticTokenizerFast`. Keep `DEFAULT_VOCAB`,
+- [x] Rename class `Tokenizer` → `SomaticTokenizerFast`. Keep `DEFAULT_VOCAB`,
       `AA_START_IDX`, `AA_END_IDX`, and a module-level singleton
       `tokenizer = SomaticTokenizerFast()`.
-- [ ] Set `vocab_files_names = {"tokenizer_file": "tokenizer.json"}` and
+- [x] Set `vocab_files_names = {"tokenizer_file": "tokenizer.json"}` and
       `model_input_names = ["input_ids", "token_type_ids", "attention_mask"]`.
-- [ ] **Emit `token_type_ids` natively** via `TemplateProcessing` so segment ids
+- [x] **Emit `token_type_ids` natively** via `TemplateProcessing` so segment ids
       reproduce the current chain layout (cls=0, heavy=0, light=1, eos=1, single
       trailing eos):
       ```python
@@ -234,11 +234,15 @@ Pattern: `ref: model/tokenization_oplm.py`. Move `src/somatic/tokenizer.py` here
       ```
       so `tokenizer(heavy, light, return_token_type_ids=True)` yields the chain
       segmentation for free.
-- [ ] Replace `encode_paired` with a thin wrapper over `self(heavy, light, ...)`
+- [x] Replace `encode_paired` with a thin wrapper over `self(heavy, light, ...)`
       returning `input_ids` / `token_type_ids` / `attention_mask`. Drop the
       `add_chain_separator` variant (plain MHA ignores chain identity).
-- [ ] Verify `tokenizer.save_pretrained(dir)` writes `tokenizer.json` +
-      `tokenizer_config.json`.
+- [x] Verify `tokenizer.save_pretrained(dir)` writes `tokenizer.json` +
+      `tokenizer_config.json`. (Round-trip via class + `AutoTokenizer` preserves
+      `token_type_ids`; reload-kwarg conflicts on `unk_token`/`clean_up_*` fixed.)
+- [x] Left `src/somatic/tokenizer.py` as a re-export shim (with a legacy
+      `Tokenizer = SomaticTokenizerFast` alias) so existing importers keep working
+      until Phases 5/8/9/11 migrate them; delete the shim afterward.
 
 ## Phase 4 — Package registration
 
