@@ -71,7 +71,7 @@ def train(
     "-c",
     type=click.Path(exists=True),
     required=True,
-    help="Model checkpoint",
+    help="Model checkpoint directory (HuggingFace format)",
 )
 @click.option("--input", "-i", type=click.Path(exists=True), required=True, help="Input file")
 @click.option("--output", "-o", type=click.Path(), required=True, help="Output file (.pt or .npy)")
@@ -96,9 +96,9 @@ def encode(
 
     Examples:
 
-        somatic encode -c checkpoints/best.pt -i data/seqs.csv -o embeddings.pt
+        somatic encode -c checkpoints/best -i data/seqs.csv -o embeddings.pt
 
-        somatic encode -c model.pt -i seqs.parquet -o emb.npy --pooling mean
+        somatic encode -c checkpoints/best -i seqs.parquet -o emb.npy --pooling mean
     """
     import numpy as np
     import pandas as pd

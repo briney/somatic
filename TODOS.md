@@ -377,16 +377,28 @@ Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 
 ## Phase 9 — Encoding / inference & CLI (`encoding/encoder.py`, `cli.py`)
 
-- [ ] Use base `SomaticModel` for embeddings: replace `outputs["hidden_states"]`
-      with `outputs.last_hidden_state` in `encode` / `encode_batch`.
-- [ ] Use `SomaticForMaskedLM` for `get_logits` / `predict` (`outputs.logits`).
-- [ ] Replace `model(token_ids=, chain_ids=, attention_mask=)` with
+- [x] Use base `SomaticModel` for embeddings: `encode` / `encode_batch` now call
+      `self.model.somatic(...)` and read `outputs.last_hidden_state`. The encoder
+      holds a single `SomaticForMaskedLM`; its inner base encoder (`.somatic`)
+      serves embeddings while the MLM head serves logits — one loaded artifact
+      covers both paths (checkpoints are saved as `SomaticForMaskedLM`).
+- [x] Use `SomaticForMaskedLM` for `get_logits` / `predict` / `log_likelihood` /
+      `perplexity`: `self.model(...)` → `outputs.logits`.
+- [x] Replaced `model(token_ids=, chain_ids=, attention_mask=)` with
       `model(input_ids=, token_type_ids=, attention_mask=)` everywhere in the
-      encoder.
-- [ ] `SomaticEncoder.from_pretrained` loads via the HF dir format
-      (`SomaticModel.from_pretrained` / `AutoModel`). Move the standalone
-      `predict_masked` helper onto `SomaticForMaskedLM` or the encoder.
-- [ ] `cli.py encode`: confirm it still works end-to-end through the updated encoder.
+      encoder; renamed internal `chain_ids` locals → `token_type_ids`; fixed
+      config attribute reads (`d_model` → `hidden_size`, `max_seq_len` →
+      `max_position_embeddings`); migrated the tokenizer import to
+      `..model.tokenization_somatic`.
+- [x] `SomaticEncoder.from_pretrained` loads the HF dir format via
+      `SomaticForMaskedLM.from_pretrained(dir)` (dropped the invalid HF
+      `map_location` kwarg; the constructor moves the model to `device`).
+      `predict_masked` already lives on `SomaticForMaskedLM` (Phase 2d) — no
+      standalone helper remains.
+- [x] `cli.py encode`: verified end-to-end against a saved HF checkpoint dir for
+      both `--pooling none` (list of per-seq embeddings) and `--pooling mean`
+      (stacked `(N, D)`). Updated `--checkpoint` help + examples to the dir format.
+      ruff format/check + ty clean.
 
 ## Phase 10 — Hydra configs (`configs/model/*.yaml`)
 

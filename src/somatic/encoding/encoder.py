@@ -8,8 +8,8 @@ import torch
 from torch import Tensor
 
 from ..data.collator import AntibodyCollator
-from ..model import SomaticModel
-from ..tokenizer import tokenizer
+from ..model import SomaticForMaskedLM
+from ..model.tokenization_somatic import tokenizer
 from ..utils.progress import ProgressManager
 from .pooling import MeanMaxPooling, PoolingStrategy, create_pooling
 
@@ -25,7 +25,8 @@ class SomaticEncoder:
     Parameters
     ----------
     model
-        Trained SomaticModel instance.
+        Trained SomaticForMaskedLM instance. Embeddings are read from the inner
+        base encoder (``model.somatic``); logits/prediction use the MLM head.
     device
         Device to run inference on.
     pooling
@@ -34,14 +35,14 @@ class SomaticEncoder:
 
     Examples
     --------
-    >>> encoder = SomaticEncoder.from_pretrained("model.pt", pooling="mean")
+    >>> encoder = SomaticEncoder.from_pretrained("checkpoints/best", pooling="mean")
     >>> embedding = encoder.encode("EVQLV...", "DIQMT...")
     >>> embeddings = encoder.encode_batch(heavy_list, light_list)
     """
 
     def __init__(
         self,
-        model: SomaticModel,
+        model: SomaticForMaskedLM,
         device: str | torch.device = "cpu",
         pooling: str | PoolingStrategy | None = None,
     ) -> None:
@@ -56,7 +57,9 @@ class SomaticEncoder:
         else:
             self.pooling = pooling
 
-        self.collator = AntibodyCollator(max_length=model.config.max_seq_len, pad_to_max=False)
+        self.collator = AntibodyCollator(
+            max_length=model.config.max_position_embeddings, pad_to_max=False
+        )
 
     @classmethod
     def from_pretrained(
@@ -65,12 +68,13 @@ class SomaticEncoder:
         device: str = "cpu",
         pooling: str | None = None,
     ) -> SomaticEncoder:
-        """Load an encoder from a pretrained checkpoint.
+        """Load an encoder from a pretrained checkpoint directory.
 
         Parameters
         ----------
         model_path
-            Path to the model checkpoint.
+            Path to the HuggingFace-format model directory (``config.json`` +
+            ``model.safetensors``).
         device
             Device to load the model on.
         pooling
@@ -81,7 +85,7 @@ class SomaticEncoder:
         SomaticEncoder
             Encoder instance.
         """
-        model = SomaticModel.from_pretrained(str(model_path), map_location=device)
+        model = SomaticForMaskedLM.from_pretrained(str(model_path))
         return cls(model, device=device, pooling=pooling)
 
     def _prepare_input(self, heavy_chain: str, light_chain: str) -> dict[str, Tensor]:
@@ -139,13 +143,13 @@ class SomaticEncoder:
         """
         batch = self._prepare_input(heavy_chain, light_chain)
 
-        outputs = self.model(
-            token_ids=batch["token_ids"],
-            chain_ids=batch["chain_ids"],
+        outputs = self.model.somatic(
+            input_ids=batch["input_ids"],
+            token_type_ids=batch["token_type_ids"],
             attention_mask=batch["attention_mask"],
         )
 
-        hidden_states = outputs["hidden_states"]
+        hidden_states = outputs.last_hidden_state
 
         if self.pooling is not None:
             embeddings = self.pooling(hidden_states, batch["attention_mask"])
@@ -206,13 +210,13 @@ class SomaticEncoder:
 
                 batch = self._prepare_batch(batch_heavy, batch_light)
 
-                outputs = self.model(
-                    token_ids=batch["token_ids"],
-                    chain_ids=batch["chain_ids"],
+                outputs = self.model.somatic(
+                    input_ids=batch["input_ids"],
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
                 )
 
-                hidden_states = outputs["hidden_states"]
+                hidden_states = outputs.last_hidden_state
 
                 if self.pooling is not None:
                     embeddings = self.pooling(hidden_states, batch["attention_mask"])
@@ -243,7 +247,7 @@ class SomaticEncoder:
         int
             The dimension of the output embeddings.
         """
-        dim = self.model.config.d_model
+        dim = self.model.config.hidden_size
         if isinstance(self.pooling, MeanMaxPooling):
             return dim * 2
         return dim
@@ -274,28 +278,28 @@ class SomaticEncoder:
         batch = self._prepare_input(heavy_chain, light_chain)
 
         outputs = self.model(
-            token_ids=batch["token_ids"],
-            chain_ids=batch["chain_ids"],
+            input_ids=batch["input_ids"],
+            token_type_ids=batch["token_type_ids"],
             attention_mask=batch["attention_mask"],
         )
 
-        logits = outputs["logits"][0]  # Remove batch dimension
-        token_ids = batch["token_ids"][0]
-        chain_ids = batch["chain_ids"][0]
+        logits = outputs.logits[0]  # Remove batch dimension
+        token_ids = batch["input_ids"][0]
+        token_type_ids = batch["token_type_ids"][0]
         attention_mask = batch["attention_mask"][0]
 
         # Trim to actual sequence length (excluding padding)
         seq_len = int(attention_mask.sum().item())
         logits = logits[:seq_len]
         token_ids = token_ids[:seq_len]
-        chain_ids = chain_ids[:seq_len]
+        token_type_ids = token_type_ids[:seq_len]
 
-        # Heavy chain: positions where chain_id == 0, excluding CLS (position 0)
-        heavy_mask = chain_ids == 0
+        # Heavy chain: positions where token_type_id == 0, excluding CLS (position 0)
+        heavy_mask = token_type_ids == 0
         heavy_mask[0] = False  # Exclude CLS
 
-        # Light chain: positions where chain_id == 1, excluding EOS (last position)
-        light_mask = chain_ids == 1
+        # Light chain: positions where token_type_id == 1, excluding EOS (last position)
+        light_mask = token_type_ids == 1
         light_mask[seq_len - 1] = False  # Exclude EOS
 
         return logits, token_ids, heavy_mask, light_mask
@@ -455,7 +459,7 @@ class SomaticEncoder:
 
         Examples
         --------
-        >>> encoder = SomaticEncoder.from_pretrained("model.pt")
+        >>> encoder = SomaticEncoder.from_pretrained("checkpoints/best")
         >>> result = encoder.predict(
         ...     heavy_chain="EVQLV<mask><mask>SGGG",
         ...     light_chain="DIQMT"
@@ -466,14 +470,14 @@ class SomaticEncoder:
         batch = self._prepare_input(heavy_chain, light_chain)
 
         outputs = self.model(
-            token_ids=batch["token_ids"],
-            chain_ids=batch["chain_ids"],
+            input_ids=batch["input_ids"],
+            token_type_ids=batch["token_type_ids"],
             attention_mask=batch["attention_mask"],
         )
 
-        logits = outputs["logits"][0]  # (seq_len, vocab_size)
-        token_ids = batch["token_ids"][0].clone()
-        chain_ids = batch["chain_ids"][0]
+        logits = outputs.logits[0]  # (seq_len, vocab_size)
+        token_ids = batch["input_ids"][0].clone()
+        token_type_ids = batch["token_type_ids"][0]
         attention_mask = batch["attention_mask"][0]
 
         seq_len = int(attention_mask.sum().item())
@@ -485,12 +489,12 @@ class SomaticEncoder:
             token_ids[:seq_len] = torch.where(mask_positions, predictions, token_ids[:seq_len])
 
         # Split into heavy and light chains
-        # Heavy: chain_id == 0, excluding CLS (position 0)
-        # Light: chain_id == 1, excluding EOS (last position)
-        heavy_mask = chain_ids[:seq_len] == 0
+        # Heavy: token_type_id == 0, excluding CLS (position 0)
+        # Light: token_type_id == 1, excluding EOS (last position)
+        heavy_mask = token_type_ids[:seq_len] == 0
         heavy_mask[0] = False  # Exclude CLS
 
-        light_mask = chain_ids[:seq_len] == 1
+        light_mask = token_type_ids[:seq_len] == 1
         light_mask[seq_len - 1] = False  # Exclude EOS
 
         heavy_ids = token_ids[:seq_len][heavy_mask].tolist()
