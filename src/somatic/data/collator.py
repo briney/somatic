@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from ..tokenizer import tokenizer
+from ..model.tokenization_somatic import tokenizer
 
 
 class EncodedPair(TypedDict):
@@ -18,8 +18,8 @@ class EncodedPair(TypedDict):
     masks are unavailable.
     """
 
-    token_ids: list[int]
-    chain_ids: list[int]
+    input_ids: list[int]
+    token_type_ids: list[int]
     cdr_mask: list[int] | None
     nt_mask: list[int] | None
     special_mask: list[int]
@@ -30,7 +30,7 @@ class AntibodyCollator:
     Collates antibody sequences into padded batches.
 
     Format: [CLS] heavy light [EOS]
-    Chain IDs: 0 for CLS/heavy, 1 for light/EOS
+    Token type IDs: 0 for CLS/heavy, 1 for light/EOS (chain identity)
     Coordinates: (optional) CA atom 3D coordinates for each position
     """
 
@@ -50,8 +50,8 @@ class AntibodyCollator:
         heavy_ids = tokenizer.encode(heavy, add_special_tokens=False)
         light_ids = tokenizer.encode(light, add_special_tokens=False)
 
-        token_ids = [tokenizer.cls_token_id] + heavy_ids + light_ids + [tokenizer.eos_token_id]
-        chain_ids = [0] * (1 + len(heavy_ids)) + [1] * (len(light_ids) + 1)
+        input_ids = [tokenizer.cls_token_id] + heavy_ids + light_ids + [tokenizer.eos_token_id]
+        token_type_ids = [0] * (1 + len(heavy_ids)) + [1] * (len(light_ids) + 1)
         special_mask = [1] + [0] * len(heavy_ids) + [0] * len(light_ids) + [1]
 
         if heavy_cdr is not None and light_cdr is not None:
@@ -65,8 +65,8 @@ class AntibodyCollator:
             nt_mask = None
 
         return {
-            "token_ids": token_ids,
-            "chain_ids": chain_ids,
+            "input_ids": input_ids,
+            "token_type_ids": token_type_ids,
             "cdr_mask": cdr_mask,
             "nt_mask": nt_mask,
             "special_mask": special_mask,
@@ -161,10 +161,10 @@ class AntibodyCollator:
             )
             coords_list.append(combined_coords)
 
-        lengths = [len(e["token_ids"]) for e in encoded]
+        lengths = [len(e["input_ids"]) for e in encoded]
         pad_len = self.max_length if self.pad_to_max else min(max(lengths), self.max_length)
 
-        token_ids, chain_ids, attention_mask, special_masks = [], [], [], []
+        input_ids, token_type_ids, attention_mask, special_masks = [], [], [], []
         cdr_masks, nt_masks = [], []
         padded_coords = []
 
@@ -173,10 +173,10 @@ class AntibodyCollator:
         has_coords = coords_list[0] is not None
 
         for i, enc in enumerate(encoded):
-            seq_len = min(len(enc["token_ids"]), pad_len)
+            seq_len = min(len(enc["input_ids"]), pad_len)
 
-            token_ids.append(self._pad_sequence(enc["token_ids"], pad_len, tokenizer.pad_token_id))
-            chain_ids.append(self._pad_sequence(enc["chain_ids"], pad_len, 0))
+            input_ids.append(self._pad_sequence(enc["input_ids"], pad_len, tokenizer.pad_token_id))
+            token_type_ids.append(self._pad_sequence(enc["token_type_ids"], pad_len, 0))
             attention_mask.append([1] * seq_len + [0] * (pad_len - seq_len))
             special_masks.append(self._pad_sequence(enc["special_mask"], pad_len, 1))
 
@@ -193,8 +193,8 @@ class AntibodyCollator:
                 padded_coords.append(self._pad_coords(coords_i, pad_len))
 
         result = {
-            "token_ids": torch.tensor(token_ids, dtype=torch.long),
-            "chain_ids": torch.tensor(chain_ids, dtype=torch.long),
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "token_type_ids": torch.tensor(token_type_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
             "special_tokens_mask": torch.tensor(special_masks, dtype=torch.bool),
             "cdr_mask": torch.tensor(cdr_masks, dtype=torch.long) if has_cdr else None,

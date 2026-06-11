@@ -287,12 +287,12 @@ Pattern: `ref: __init__.py:27-49`.
 
 ## Phase 5 — Collator (`data/collator.py`)
 
-- [ ] Update the singleton import to `from ..model.tokenization_somatic import tokenizer`.
-- [ ] Rename output dict keys: `token_ids` → `input_ids`, `chain_ids` →
+- [x] Update the singleton import to `from ..model.tokenization_somatic import tokenizer`.
+- [x] Rename output dict keys: `token_ids` → `input_ids`, `chain_ids` →
       `token_type_ids` (keep the same 0/1 construction). Keep `attention_mask`,
       `special_tokens_mask`, `cdr_mask`, `non_templated_mask`, `coords`.
-- [ ] Update the internal `EncodedPair` TypedDict keys accordingly.
-- [ ] Keep the manual token assembly (it aligns coords/cdr/nt masks with the
+- [x] Update the internal `EncodedPair` TypedDict keys accordingly.
+- [x] Keep the manual token assembly (it aligns coords/cdr/nt masks with the
       token layout — simpler than re-deriving offsets from the tokenizer).
 
 ## Phase 6 — Masking (`masking/masking.py`)
