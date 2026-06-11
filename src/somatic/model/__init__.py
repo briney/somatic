@@ -6,9 +6,17 @@ from .attention import (
     MultiHeadAttention,
     SharedQKVChainAwareAttention,
 )
+from .configuration_somatic import SomaticConfig
 from .embeddings import SomaticEmbedding, TokenEmbedding
 from .ffn import FusedSwiGLUFFN
 from .layers import PreNormBlock, TransformerBlock, TransformerEncoder
+from .modeling_somatic import (
+    SomaticForMaskedLM,
+    SomaticForSequenceClassification,
+    SomaticForTokenClassification,
+    SomaticModel,
+    SomaticPreTrainedModel,
+)
 from .normalization import (
     LearnedQKScale,
     QKNormModule,
@@ -17,10 +25,13 @@ from .normalization import (
     create_qk_norm,
 )
 from .rope import RotaryPositionEmbedding
-from .transformer import SomaticConfig, SomaticModel
 
 __all__ = [
     "SomaticModel",
+    "SomaticPreTrainedModel",
+    "SomaticForMaskedLM",
+    "SomaticForSequenceClassification",
+    "SomaticForTokenClassification",
     "SomaticConfig",
     "TransformerBlock",
     "PreNormBlock",

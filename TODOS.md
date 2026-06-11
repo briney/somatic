@@ -145,32 +145,33 @@ Pattern: `ref: model/modeling_oplm.py`. Keep the math identical to the current
 implementation; this phase is repackaging + renaming + HF interfaces.
 
 ### 2a. Thread `token_type_ids` through the stack (internal rename)
-- [ ] In `model/attention.py`: rename the `chain_ids` parameter to
+- [x] In `model/attention.py`: rename the `chain_ids` parameter to
       `token_type_ids` in `ChainAwareAttention.forward`,
       `SharedQKVChainAwareAttention.forward`, `BaseAttention`, and
       `MultiHeadAttention.forward` (the last keeps accepting + ignoring it).
-- [ ] In `model/layers.py`: rename `chain_ids` → `token_type_ids` in
+- [x] In `model/layers.py`: rename `chain_ids` → `token_type_ids` in
       `TransformerBlock.forward` and `TransformerEncoder.forward` and all
       internal passes to attention. Keep `set_gradient_checkpointing` as-is.
 
 ### 2b. Base classes
-- [ ] `class SomaticPreTrainedModel(PreTrainedModel)`:
+- [x] `class SomaticPreTrainedModel(PreTrainedModel)`:
       `config_class = SomaticConfig`, `base_model_prefix = "somatic"`,
       `main_input_name = "input_ids"`, `supports_gradient_checkpointing = True`,
       `_no_split_modules = ["TransformerBlock"]`, `_supports_sdpa = True`.
-- [ ] Port `_init_weights(self, module)` from current `transformer.py`, using
+- [x] Port `_init_weights(self, module)` from current `transformer.py`, using
       `self.config.initializer_range`.
-- [ ] Add `_set_gradient_checkpointing(value, mode=None)`,
+- [x] Add `_set_gradient_checkpointing(value, mode=None)`,
       `gradient_checkpointing_enable(gradient_checkpointing_kwargs=None)`,
       `gradient_checkpointing_disable()` that propagate to
       `TransformerEncoder.set_gradient_checkpointing` (ref: `modeling_oplm.py:119-148`).
+      (Also preserved `get_num_params(non_embedding=...)` on the base class.)
 
 ### 2c. `SomaticModel` (base encoder → `BaseModelOutput`)
-- [ ] `__init__`: build `SomaticEmbedding` + `TransformerEncoder` (+ final norm
+- [x] `__init__`: build `SomaticEmbedding` + `TransformerEncoder` (+ final norm
       already inside the encoder). Call `self.post_init()`.
-- [ ] `get_input_embeddings` / `set_input_embeddings` pointing at
+- [x] `get_input_embeddings` / `set_input_embeddings` pointing at
       `embeddings.token_embedding.embedding`.
-- [ ] `forward(input_ids=None, attention_mask=None, token_type_ids=None,
+- [x] `forward(input_ids=None, attention_mask=None, token_type_ids=None,
       inputs_embeds=None, output_attentions=None, output_hidden_states=None,
       return_dict=None)`:
       - default `token_type_ids` to zeros (single chain) when None;
@@ -178,33 +179,42 @@ implementation; this phase is repackaging + renaming + HF interfaces.
       - return `BaseModelOutput(last_hidden_state=..., hidden_states=..., attentions=...)`.
 
 ### 2d. `SomaticForMaskedLM` (→ `MaskedLMOutput`)
-- [ ] `self.somatic = SomaticModel(config)`; keep Somatic's existing **bias-free
+- [x] `self.somatic = SomaticModel(config)`; keep Somatic's existing **bias-free
       tied Linear** `lm_head` (do NOT adopt oplm's dense+act+norm head — preserve
       the current architecture).
-- [ ] `_tied_weights_keys = {"lm_head.weight": "somatic.embeddings.token_embedding.embedding.weight"}`;
+- [x] `_tied_weights_keys = {"lm_head.weight": "somatic.embeddings.token_embedding.embedding.weight"}`;
       rely on `config.tie_word_embeddings=True` + `post_init()` to tie.
-- [ ] `forward(..., token_type_ids=None, labels=None, ...)`: run base model,
+- [x] `forward(..., token_type_ids=None, labels=None, ...)`: run base model,
       `logits = self.lm_head(last_hidden_state).float()`; if `labels is not None`,
       `loss = F.cross_entropy(logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100)`;
       return `MaskedLMOutput(loss=loss, logits=logits, hidden_states=..., attentions=...)`.
-- [ ] Add `get_output_embeddings` / `set_output_embeddings` (the lm_head).
+- [x] Add `get_output_embeddings` / `set_output_embeddings` (the lm_head).
+      (Also pulled the Phase 9 `predict_masked` helper onto `SomaticForMaskedLM`,
+      reworked to use config token ids — keeps modeling self-contained for
+      remote bundling.)
 
 ### 2e. Classification heads
-- [ ] `SomaticForSequenceClassification` (→ `SequenceClassifierOutput`) and
+- [x] `SomaticForSequenceClassification` (→ `SequenceClassifierOutput`) and
       `SomaticForTokenClassification` (→ `TokenClassifierOutput`): port directly
       from `ref: modeling_oplm.py:394-562`, threading `token_type_ids` into the
       inner `SomaticModel`. Use `config.classifier_pool` / `classifier_dropout` /
       `pre_head_norm`; seq-classification uses HF `problem_type` loss inference.
-      (Add `mean_pool`/`cls_pool` helpers or reuse the existing pooling utilities
-      from `encoding/`.)
+      (Added module-level `mean_pool`/`cls_pool` helpers in `modeling_somatic.py`.)
 
 ### 2f. Remote-code bundling
-- [ ] In `modeling_somatic.py`, directly import all helper modules and add:
+- [x] In `modeling_somatic.py`, directly import all helper modules and add:
       ```python
       _REMOTE_CODE_DEPS = (ChainAwareAttention, FusedSwiGLUFFN, RotaryPositionEmbedding, ...)
       ```
-- [ ] Remove the now-empty `model/transformer.py` (or reduce to re-exports if
+- [x] Remove the now-empty `model/transformer.py` (or reduce to re-exports if
       anything still imports it, then delete those imports).
+
+### 2g. RoPE meta-device fix (required for HF `from_pretrained` round-trip)
+- [x] `model/rope.py`: the non-persistent sin/cos buffers re-materialize as
+      uninitialized memory under HF's meta-device fast init. Recompute `inv_freq`
+      from `base`/`rotated_dim` and rebuild the cache on the first real forward
+      (`_cache_initialized` flag). Rotation math is unchanged; verified
+      save→reload logits match exactly (maxdiff 0.0).
 
 ## Phase 3 — Tokenizer (`model/tokenization_somatic.py`)
 
