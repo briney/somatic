@@ -248,10 +248,10 @@ Pattern: `ref: model/tokenization_oplm.py`. Move `src/somatic/tokenizer.py` here
 
 Pattern: `ref: __init__.py:27-49`.
 
-- [ ] `src/somatic/model/__init__.py`: export `SomaticConfig`, `SomaticModel`,
+- [x] `src/somatic/model/__init__.py`: export `SomaticConfig`, `SomaticModel`,
       `SomaticForMaskedLM`, `SomaticForSequenceClassification`,
       `SomaticForTokenClassification`, `SomaticTokenizerFast`.
-- [ ] `src/somatic/__init__.py`: register and flag for auto-class file copy:
+- [x] `src/somatic/__init__.py`: register and flag for auto-class file copy:
       ```python
       AutoConfig.register("somatic", SomaticConfig, exist_ok=True)
       AutoModel.register(SomaticConfig, SomaticModel, exist_ok=True)
@@ -267,8 +267,23 @@ Pattern: `ref: __init__.py:27-49`.
       SomaticForTokenClassification.register_for_auto_class("AutoModelForTokenClassification")
       SomaticTokenizerFast.register_for_auto_class("AutoTokenizer")
       ```
-- [ ] Guard against import cycles (registration imports model classes, which
-      import config/tokenizer).
+- [x] Guard against import cycles (registration imports model classes, which
+      import config/tokenizer). No cycle: tokenization/config/modeling only import
+      transformers + tokenizers + torch, never back into the top package.
+
+### 4a. Tied-weight load fix (required by `register_for_auto_class`)
+- [x] Setting `register_for_auto_class` writes `auto_map` into `config.json`,
+      which routes `from_pretrained` through the meta-device custom-code path. That
+      path marks the tied target (`lm_head.weight`) as already-initialized, drops it
+      from `missing_keys`, then declines to tie ("both present"), stranding it on
+      the meta device. (oplm dodges this by defaulting `tie_word_embeddings=False`;
+      Somatic requires the tie.) Fix: override `SomaticForMaskedLM.tie_weights` to
+      perform the single `lm_head.weight <- input embedding` tie directly.
+- [x] Verified end to end: in-process `AutoModelForMaskedLM`/`AutoModel`/
+      `AutoTokenizer.from_pretrained` AND a subprocess `trust_remote_code=True`
+      reload (no `import somatic`) both reproduce logits (maxdiff 0.0),
+      `token_type_ids`, and the tie. All helper `.py` files + `auto_map` land
+      beside `config.json` / `tokenizer_config.json`.
 
 ## Phase 5 — Collator (`data/collator.py`)
 

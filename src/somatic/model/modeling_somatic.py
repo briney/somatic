@@ -304,6 +304,28 @@ class SomaticForMaskedLM(SomaticPreTrainedModel):
     def set_output_embeddings(self, new_embeddings: nn.Module) -> None:
         self.lm_head = new_embeddings
 
+    def tie_weights(self, *args, **kwargs):
+        """Tie ``lm_head.weight`` to the input embedding weight.
+
+        Implemented directly rather than via the base class's dict-driven tier.
+        On the ``auto_map`` + meta-device ``from_pretrained`` path, that tier marks
+        the tied target as already-initialized, drops it from ``missing_keys``,
+        then declines to tie ("both present") — leaving ``lm_head.weight`` stranded
+        on the meta device. Re-pointing it at the (real, loaded) input embedding
+        here always materializes the tie. The base-class bookkeeping
+        (``all_tied_weights_keys``) is still populated from ``_tied_weights_keys``
+        in ``post_init``, so ``save_pretrained`` continues to deduplicate the tied
+        weight.
+        """
+        if not getattr(self.config, "tie_word_embeddings", True):
+            return
+        input_embeddings = self.get_input_embeddings()
+        if input_embeddings is not None:
+            self.lm_head.weight = input_embeddings.weight
+        missing_keys = kwargs.get("missing_keys")
+        if missing_keys is not None:
+            missing_keys.discard("lm_head.weight")
+
     def forward(
         self,
         input_ids: Tensor | None = None,

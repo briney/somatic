@@ -25,6 +25,7 @@ from .normalization import (
     create_qk_norm,
 )
 from .rope import RotaryPositionEmbedding
+from .tokenization_somatic import SomaticTokenizerFast
 
 __all__ = [
     "SomaticModel",
@@ -33,6 +34,7 @@ __all__ = [
     "SomaticForSequenceClassification",
     "SomaticForTokenClassification",
     "SomaticConfig",
+    "SomaticTokenizerFast",
     "TransformerBlock",
     "PreNormBlock",
     "TransformerEncoder",
