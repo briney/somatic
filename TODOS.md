@@ -309,26 +309,40 @@ Pattern: `ref: __init__.py:27-49`.
 Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 `train.py`, `cli.py`.
 
-- [ ] `train.py`: build `SomaticForMaskedLM(SomaticConfig(**hf_named_fields))`;
-      map `cfg.model.*` Hydra keys to the new HF field names.
-- [ ] Training step: get `labels` from the masker; call
+- [x] `train.py`: build `SomaticForMaskedLM(SomaticConfig(**hf_named_fields))` via
+      `_build_model_config(cfg.model)`. NOTE: that helper currently reads the
+      *current* (pre-Phase-10) Hydra key names (`d_model`, `n_layers`, ...) and maps
+      them onto the HF `SomaticConfig` fields, so `somatic train`/`model-size` keep
+      working against today's YAMLs. Phase 10 renames the YAML keys → at that point
+      simplify `_build_model_config` to read the HF names directly (also shared by
+      `cli.py model-size`). `training/flops.py` updated to read `hidden_size` /
+      `num_hidden_layers` / `intermediate_size` / `max_position_embeddings`.
+- [x] Training step: get `labels` from the masker; call
       `model(input_ids=masked_input_ids, token_type_ids=batch["token_type_ids"],
       attention_mask=batch["attention_mask"], labels=labels)` and use
-      `outputs.loss`. Remove the external `compute_masked_cross_entropy` loss call
-      (delete the helper if no metric still needs it).
-- [ ] **Checkpoint format (clean break)** — replace the combined-`.pt` /
+      `outputs.loss`. Kept `compute_masked_cross_entropy` (still used inside
+      `compute_mlm_metrics` for train/eval logging — Phase 8 refactors metrics);
+      only the trainer's direct loss call was removed. Also updated
+      `eval/regions.py::extract_region_masks` to read `token_type_ids` (the
+      training masking-frequency tracker depends on it).
+- [x] **Checkpoint format (clean break)** — replaced the combined-`.pt` /
       `asdict(config)` scheme in `checkpoint.py`:
       - Publishable/best/final: `model.save_pretrained(dir)` (→ `config.json`
         with `auto_map` + `model.safetensors`) and `tokenizer.save_pretrained(dir)`
-        (→ `tokenizer.json`, `tokenizer_config.json` with `auto_map`).
+        (→ `tokenizer.json`, `tokenizer_config.json`). Verified the bundled
+        custom-code `.py` files land in the dir.
       - Resume state: sibling `training_state.pt` =
         `{step, epoch, optimizer_state_dict, scheduler_state_dict, rng, metrics}`.
-      - Resume path: `AutoModelForMaskedLM.from_pretrained(dir)` then load
-        `training_state.pt`.
-      - Drop the legacy field-pop logic (`max_timesteps`, `use_timestep_embedding`,
-        bool `hybrid_norm`).
-- [ ] Preserve the existing constraint: the scheduler is NOT wrapped by
-      `accelerator.prepare()` (avoids the 8x-step DDP bug).
+      - Resume path: `train.py` rebuilds the model via
+        `SomaticForMaskedLM.from_pretrained(dir)`, then
+        `CheckpointManager.load_training_state(dir)` restores optimizer/scheduler/
+        RNG and sets `global_step`/`epoch`.
+      - Legacy field-pop logic was already gone (removed with `transformer.py` in
+        Phase 2); nothing to drop in `checkpoint.py`.
+      - Hardened rotation: re-saving the same step (final checkpoint on a
+        checkpoint_steps boundary) no longer deletes the just-written directory.
+- [x] Preserved the existing constraint: the scheduler is NOT wrapped by
+      `accelerator.prepare()` (avoids the 8x-step DDP bug). Unchanged.
 
 ## Phase 8 — Eval system (`eval/`, `training/metrics.py`)
 

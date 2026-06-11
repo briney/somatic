@@ -56,11 +56,11 @@ def compute_model_flops_per_token(config: SomaticConfig) -> int:
     int
         Estimated FLOPs per token for a single forward pass.
     """
-    d_model = config.d_model
-    n_layers = config.n_layers
-    d_ffn = config.d_ffn
-    assert d_ffn is not None, "d_ffn must be resolved (set in SomaticConfig.__post_init__)"
-    seq_len = config.max_seq_len
+    d_model = config.hidden_size
+    n_layers = config.num_hidden_layers
+    d_ffn = config.intermediate_size
+    assert d_ffn is not None, "intermediate_size must be resolved by SomaticConfig"
+    seq_len = config.max_position_embeddings
     vocab_size = config.vocab_size
 
     if not config.use_chain_aware_attention:

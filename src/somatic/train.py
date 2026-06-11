@@ -15,7 +15,7 @@ from omegaconf import DictConfig, OmegaConf
 from .data import create_eval_dataloaders, create_train_dataloader
 from .eval import Evaluator
 from .logging import WandbLogger
-from .model import SomaticConfig, SomaticModel
+from .model import SomaticConfig, SomaticForMaskedLM
 from .training import FLOPsConfig, MaskingFrequencyConfig, Trainer, TrainingConfig
 from .utils import set_seed
 
@@ -111,6 +111,36 @@ def _validate_mixed_precision(value: str) -> None:
     if value not in _ALLOWED_MIXED_PRECISION:
         allowed = ", ".join(sorted(_ALLOWED_MIXED_PRECISION))
         raise ValueError(f"train.mixed_precision must be one of {{{allowed}}}, got {value!r}")
+
+
+def _build_model_config(model_cfg: DictConfig) -> SomaticConfig:
+    """Build a ``SomaticConfig`` from the Hydra ``model:`` block.
+
+    Maps the Hydra keys onto HuggingFace-canonical ``SomaticConfig`` field names.
+    """
+    return SomaticConfig(
+        vocab_size=model_cfg.vocab_size,
+        hidden_size=model_cfg.d_model,
+        num_hidden_layers=model_cfg.n_layers,
+        num_attention_heads=model_cfg.n_heads,
+        intermediate_size=model_cfg.d_ffn,
+        ffn_multiplier=model_cfg.ffn_multiplier,
+        max_position_embeddings=model_cfg.max_seq_len,
+        rope_fraction=model_cfg.rope_fraction,
+        hidden_dropout=model_cfg.dropout,
+        attention_dropout=model_cfg.attention_dropout,
+        use_chain_aware_attention=model_cfg.use_chain_aware_attention,
+        chain_aware_projection_mode=model_cfg.get("chain_aware_projection_mode", "separate"),
+        norm_type=model_cfg.norm_type,
+        pre_norm=model_cfg.pre_norm,
+        post_norm=model_cfg.post_norm,
+        qk_norm=model_cfg.qk_norm,
+        norm_eps=model_cfg.layer_norm_eps,
+        hybrid_norm=model_cfg.hybrid_norm,
+        gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
+        gradient_checkpointing_mode=model_cfg.get("gradient_checkpointing_mode", "full"),
+        pad_token_id=model_cfg.get("padding_idx", 1),
+    )
 
 
 def _build_masking_frequency_config(cfg: DictConfig) -> MaskingFrequencyConfig:
@@ -240,32 +270,13 @@ def run_training(
     # PHASE 4: Parallel operations (all processes)
     # ==================================================================
 
-    # Create model
-    model_config = SomaticConfig(
-        vocab_size=cfg.model.vocab_size,
-        padding_idx=cfg.model.padding_idx,
-        d_model=cfg.model.d_model,
-        n_layers=cfg.model.n_layers,
-        n_heads=cfg.model.n_heads,
-        d_ffn=cfg.model.d_ffn,
-        ffn_multiplier=cfg.model.ffn_multiplier,
-        max_seq_len=cfg.model.max_seq_len,
-        rope_fraction=cfg.model.rope_fraction,
-        dropout=cfg.model.dropout,
-        attention_dropout=cfg.model.attention_dropout,
-        embedding_dropout=cfg.model.embedding_dropout,
-        use_chain_aware_attention=cfg.model.use_chain_aware_attention,
-        chain_aware_projection_mode=cfg.model.get("chain_aware_projection_mode", "separate"),
-        norm_type=cfg.model.norm_type,
-        pre_norm=cfg.model.pre_norm,
-        post_norm=cfg.model.post_norm,
-        qk_norm=cfg.model.qk_norm,
-        layer_norm_eps=cfg.model.layer_norm_eps,
-        hybrid_norm=cfg.model.hybrid_norm,
-        gradient_checkpointing=cfg.model.get("gradient_checkpointing", False),
-        gradient_checkpointing_mode=cfg.model.get("gradient_checkpointing_mode", "full"),
-    )
-    model = SomaticModel(model_config)
+    # Create model — when resuming, rebuild from the checkpoint directory (which
+    # carries its own config.json); otherwise build fresh from the Hydra config.
+    if resume_from:
+        accelerator.print(f"Resuming model from {resume_from}")
+        model = SomaticForMaskedLM.from_pretrained(resume_from)
+    else:
+        model = SomaticForMaskedLM(_build_model_config(cfg.model))
     accelerator.print(f"Model parameters: {model.get_num_params():,}")
 
     # Create train dataloader (handles single or multi-dataset automatically)
@@ -358,10 +369,13 @@ def run_training(
         )
         trainer.set_logger(logger)
 
-    # Resume if specified
+    # Resume training state (optimizer/scheduler/step/epoch/RNG) if resuming.
+    # The model weights were already restored above via from_pretrained.
     if resume_from:
-        accelerator.print(f"Resuming from {resume_from}")
-        trainer.checkpoint_manager.load(resume_from)
+        state = trainer.checkpoint_manager.load_training_state(resume_from)
+        trainer.global_step = state["step"]
+        trainer.epoch = state["epoch"]
+        accelerator.print(f"Resumed training state at step {state['step']}")
 
     # Train
     trainer.train()

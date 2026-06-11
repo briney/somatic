@@ -131,7 +131,7 @@ class MaskingFrequencyTracker:
         mask_labels
             Boolean tensor (batch, seq_len) indicating masked positions.
         batch
-            Batch dictionary containing cdr_mask, chain_ids, attention_mask,
+            Batch dictionary containing cdr_mask, token_type_ids, attention_mask,
             and optionally special_tokens_mask.
         """
         if not self.config.enabled:

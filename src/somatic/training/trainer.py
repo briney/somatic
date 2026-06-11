@@ -16,7 +16,6 @@ from .masking_frequency import MaskingFrequencyConfig, MaskingFrequencyTracker
 from .metrics import (
     MetricAccumulator,
     MLMMetrics,
-    compute_masked_cross_entropy,
     compute_mlm_metrics,
 )
 from .optimizer import create_optimizer, create_scheduler, get_lr
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from ..eval import Evaluator
-    from ..model import SomaticModel
+    from ..model import SomaticForMaskedLM
 
 
 _VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
@@ -105,7 +104,7 @@ class Trainer:
     def __init__(
         self,
         config: TrainingConfig,
-        model: SomaticModel,
+        model: SomaticForMaskedLM,
         train_dataloader: DataLoader,
         eval_dataloader: DataLoader | None = None,
         eval_dataloaders: dict[str, DataLoader] | None = None,
@@ -219,7 +218,6 @@ class Trainer:
             unwrapped_model,
             self.optimizer,
             self.scheduler,
-            model_config=unwrapped_model.config,
         )
 
         self.metrics = MetricAccumulator()
@@ -261,25 +259,29 @@ class Trainer:
         self.evaluator = evaluator
 
     def _apply_masking(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """Apply masking to a batch."""
+        """Apply masking to a batch.
+
+        Returns a dict with ``masked_input_ids`` (model input) and ``labels``
+        (original ids at masked positions, ``-100`` elsewhere).
+        """
         if self.config.use_information_weighted_masking and (
             batch.get("cdr_mask") is not None or batch.get("non_templated_mask") is not None
         ):
-            masked_ids, mask_labels = self.masker.apply_mask(
-                token_ids=batch["token_ids"],
+            masked_input_ids, labels = self.masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 cdr_mask=batch.get("cdr_mask"),
                 non_templated_mask=batch.get("non_templated_mask"),
                 special_tokens_mask=batch.get("special_tokens_mask"),
             )
         else:
-            masked_ids, mask_labels = self.uniform_masker.apply_mask(
-                token_ids=batch["token_ids"],
+            masked_input_ids, labels = self.uniform_masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 special_tokens_mask=batch.get("special_tokens_mask"),
             )
 
-        return {"masked_ids": masked_ids, "mask_labels": mask_labels}
+        return {"masked_input_ids": masked_input_ids, "labels": labels}
 
     def training_step(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, MLMMetrics]:
         """Execute a single training step.
@@ -288,31 +290,28 @@ class Trainer:
             Tuple of (loss tensor for backprop, MLMMetrics with all metrics).
         """
         mask_output = self._apply_masking(batch)
+        labels = mask_output["labels"]
+        mask = labels != -100
 
         # Track masking frequency
-        self.masking_frequency_tracker.update(mask_output["mask_labels"], batch)
+        self.masking_frequency_tracker.update(mask, batch)
 
         outputs = self.model(
-            token_ids=mask_output["masked_ids"],
-            chain_ids=batch["chain_ids"],
+            input_ids=mask_output["masked_input_ids"],
+            token_type_ids=batch["token_type_ids"],
             attention_mask=batch["attention_mask"],
+            labels=labels,
         )
 
         metrics = compute_mlm_metrics(
-            logits=outputs["logits"],
-            targets=batch["token_ids"],
-            mask_labels=mask_output["mask_labels"],
+            logits=outputs.logits,
+            targets=batch["input_ids"],
+            mask_labels=mask,
             attention_mask=batch["attention_mask"],
         )
 
-        # Compute loss tensor for backprop (metrics.loss is a float)
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=batch["token_ids"],
-            mask_labels=mask_output["mask_labels"],
-        )
-
-        return loss, metrics
+        # The model computes the masked cross-entropy internally from `labels`.
+        return outputs.loss, metrics
 
     @torch.no_grad()
     def evaluate(self) -> dict[str, float]:
@@ -329,17 +328,19 @@ class Trainer:
         ) as progress_task:
             for batch in self.eval_dataloader:
                 mask_output = self._apply_masking(batch)
+                labels = mask_output["labels"]
 
                 outputs = self.model(
-                    token_ids=mask_output["masked_ids"],
-                    chain_ids=batch["chain_ids"],
+                    input_ids=mask_output["masked_input_ids"],
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
                 metrics = compute_mlm_metrics(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_output["mask_labels"],
+                    logits=outputs.logits,
+                    targets=batch["input_ids"],
+                    mask_labels=labels != -100,
                     attention_mask=batch["attention_mask"],
                 )
 
@@ -410,20 +411,23 @@ class Trainer:
             with eval_task_cm as progress_task:
                 for batch in eval_loader:
                     mask_output = self._apply_masking(batch)
+                    labels = mask_output["labels"]
+                    mask = labels != -100
 
                     # Track masking frequency for eval
-                    eval_tracker.update(mask_output["mask_labels"], batch)
+                    eval_tracker.update(mask, batch)
 
                     outputs = self.model(
-                        token_ids=mask_output["masked_ids"],
-                        chain_ids=batch["chain_ids"],
+                        input_ids=mask_output["masked_input_ids"],
+                        token_type_ids=batch["token_type_ids"],
                         attention_mask=batch["attention_mask"],
+                        labels=labels,
                     )
 
                     metrics = compute_mlm_metrics(
-                        logits=outputs["logits"],
-                        targets=batch["token_ids"],
-                        mask_labels=mask_output["mask_labels"],
+                        logits=outputs.logits,
+                        targets=batch["input_ids"],
+                        mask_labels=mask,
                         attention_mask=batch["attention_mask"],
                     )
 
@@ -514,8 +518,8 @@ class Trainer:
                     self.metrics.update("train/perplexity", step_metrics.perplexity)
 
                     # Update FLOPs tracking
-                    batch_size = batch["token_ids"].shape[0]
-                    seq_len = batch["token_ids"].shape[1]
+                    batch_size = batch["input_ids"].shape[0]
+                    seq_len = batch["input_ids"].shape[1]
                     self.flops_tracker.update(batch_size, seq_len)
 
                     # Pre-compute conditions for this step
