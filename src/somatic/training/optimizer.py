@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
-import torch
 from torch.optim import AdamW, Optimizer
-from torch.optim.lr_scheduler import LambdaLR, _LRScheduler
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+
+if TYPE_CHECKING:
+    import torch
 
 
 def create_optimizer(
@@ -43,7 +46,7 @@ def create_scheduler(
     num_training_steps: int = 100000,
     num_warmup_steps: int = 1000,
     min_lr_ratio: float = 0.1,
-) -> _LRScheduler:
+) -> LRScheduler:
     """Create learning rate scheduler with warmup.
 
     Uses a single LambdaLR scheduler with explicit step-based multiplier calculation.

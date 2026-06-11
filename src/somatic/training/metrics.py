@@ -29,7 +29,7 @@ class MetricAccumulator:
         return self._values[name] / self._counts[name]
 
     def compute_all(self) -> dict[str, float]:
-        return {name: self.compute(name) for name in self._values}
+        return {name: value for name in self._values if (value := self.compute(name)) is not None}
 
     def reset(self) -> None:
         self._values.clear()
@@ -48,9 +48,7 @@ def compute_masked_cross_entropy(
     targets_flat = targets.view(-1)
     mask_flat = mask_labels.view(-1)
 
-    loss_per_token = torch.nn.functional.cross_entropy(
-        logits_flat, targets_flat, reduction="none"
-    )
+    loss_per_token = torch.nn.functional.cross_entropy(logits_flat, targets_flat, reduction="none")
 
     masked_loss = loss_per_token * mask_flat.float()
 
@@ -63,15 +61,13 @@ def compute_masked_cross_entropy(
         return masked_loss.sum() / num_masked
 
 
-def compute_accuracy(
-    logits: Tensor, targets: Tensor, mask_labels: Tensor
-) -> tuple[float, int]:
+def compute_accuracy(logits: Tensor, targets: Tensor, mask_labels: Tensor) -> tuple[float, int]:
     """Compute accuracy on masked positions."""
     predictions = logits.argmax(dim=-1)
     correct = (predictions == targets) & mask_labels.bool()
 
     num_correct = correct.sum().item()
-    num_total = mask_labels.sum().item()
+    num_total = int(mask_labels.sum().item())
 
     if num_total == 0:
         return 0.0, 0

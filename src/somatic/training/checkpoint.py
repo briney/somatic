@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
+
+if TYPE_CHECKING:
+    from torch.optim import Optimizer
+    from torch.optim.lr_scheduler import LRScheduler
 
 
 @dataclass
@@ -31,7 +33,7 @@ class CheckpointManager:
         config: CheckpointConfig,
         model: torch.nn.Module,
         optimizer: Optimizer,
-        scheduler: _LRScheduler | None = None,
+        scheduler: LRScheduler | None = None,
         model_config: Any | None = None,
     ) -> None:
         self.config = config
@@ -54,7 +56,7 @@ class CheckpointManager:
     def save(
         self,
         step: int,
-        epoch: int,
+        epoch: float,
         metrics: dict[str, float] | None = None,
         extra_state: dict[str, Any] | None = None,
     ) -> Path | None:
@@ -89,13 +91,13 @@ class CheckpointManager:
         # Save best checkpoint
         if self.config.save_best and metrics is not None:
             metric_value = metrics.get(self.config.best_metric)
-            if metric_value is not None:
-                if self.best_metric_value is None or self._is_better(
-                    metric_value, self.best_metric_value
-                ):
-                    self.best_metric_value = metric_value
-                    best_path = self.save_dir / "best_checkpoint.pt"
-                    torch.save(checkpoint, best_path)
+            if metric_value is not None and (
+                self.best_metric_value is None
+                or self._is_better(metric_value, self.best_metric_value)
+            ):
+                self.best_metric_value = metric_value
+                best_path = self.save_dir / "best_checkpoint.pt"
+                torch.save(checkpoint, best_path)
 
         return checkpoint_path
 

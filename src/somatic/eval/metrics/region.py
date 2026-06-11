@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 from torch import Tensor
@@ -13,6 +13,9 @@ from ..regions import (
     aggregate_region_masks,
     extract_region_masks,
 )
+
+if TYPE_CHECKING:
+    from ...model.transformer import ModelOutput
 
 
 class RegionAccuracyMetric(MetricBase):
@@ -83,7 +86,7 @@ class RegionAccuracyMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -224,7 +227,7 @@ class _RegionCrossEntropyMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -234,6 +237,7 @@ class _RegionCrossEntropyMetric(MetricBase):
 
         logits = outputs["logits"]
         targets = batch["token_ids"]
+        assert targets is not None
 
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)

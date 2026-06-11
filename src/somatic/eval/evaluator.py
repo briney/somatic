@@ -6,14 +6,12 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 import torch
-from torch.utils.data import DataLoader
 
 from ..utils.progress import ProgressManager
-from .base import Metric
 from .cross_chain_config import build_cross_chain_eval_config
 from .cross_chain_eval import run_cross_chain_eval
 from .masking import EvalMasker, create_eval_masker
-from .region_config import RegionEvalConfig, build_region_eval_config
+from .region_config import build_region_eval_config
 from .region_eval import (
     _get_model_device,
     run_per_position_eval,
@@ -26,8 +24,10 @@ from .registry import build_metrics
 if TYPE_CHECKING:
     from accelerate import Accelerator
     from omegaconf import DictConfig
+    from torch.utils.data import DataLoader
 
     from ..model import SomaticModel
+    from .base import Metric
 
 
 class Evaluator:
@@ -44,9 +44,9 @@ class Evaluator:
 
     def __init__(
         self,
-        cfg: "DictConfig",
-        model: "SomaticModel",
-        accelerator: "Accelerator | None" = None,
+        cfg: DictConfig,
+        model: SomaticModel,
+        accelerator: Accelerator | None = None,
     ) -> None:
         """Initialize the evaluator.
 
@@ -263,7 +263,7 @@ class Evaluator:
                     try:
                         metric.update(outputs, batch, mask_labels)
                     except Exception as e:
-                        warnings.warn(f"Metric '{metric.name}' update failed: {e}")
+                        warnings.warn(f"Metric '{metric.name}' update failed: {e}", stacklevel=2)
 
                 progress_task.advance()
 
@@ -277,7 +277,7 @@ class Evaluator:
                 computed = metric.compute()
                 results.update(computed)
             except Exception as e:
-                warnings.warn(f"Metric '{metric.name}' compute failed: {e}")
+                warnings.warn(f"Metric '{metric.name}' compute failed: {e}", stacklevel=2)
 
         # Region-based evaluation (if enabled for this dataset)
         region_cfg = self._get_region_config(eval_name)
@@ -290,7 +290,7 @@ class Evaluator:
                 for key, value in region_results.items():
                     results[f"region/{key}"] = value
             except Exception as e:
-                warnings.warn(f"Region evaluation failed: {e}")
+                warnings.warn(f"Region evaluation failed: {e}", stacklevel=2)
 
         # Cross-chain attention evaluation (if enabled for this dataset).
         # Separate unmasked forward pass that captures attention weights.
@@ -303,7 +303,7 @@ class Evaluator:
                 for key, value in cc_results.items():
                     results[f"cross_chain/{key}"] = value
             except Exception as e:
-                warnings.warn(f"Cross-chain attention evaluation failed: {e}")
+                warnings.warn(f"Cross-chain attention evaluation failed: {e}", stacklevel=2)
 
         self.model.train()
 

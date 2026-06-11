@@ -131,8 +131,16 @@ class MultiHeadAttention(BaseAttention):
         rope_fraction: float = 1.0,
     ) -> None:
         super().__init__(
-            d_model, n_heads, head_dim, dropout, bias, max_seq_len,
-            qk_norm, norm_type, layer_norm_eps, hybrid_norm,
+            d_model,
+            n_heads,
+            head_dim,
+            dropout,
+            bias,
+            max_seq_len,
+            qk_norm,
+            norm_type,
+            layer_norm_eps,
+            hybrid_norm,
             rope_fraction=rope_fraction,
         )
 
@@ -220,6 +228,7 @@ class MultiHeadAttention(BaseAttention):
         output = self.out_proj(output)
 
         if need_weights:
+            assert attn_weights is not None
             return output, attn_weights
         return output
 
@@ -270,8 +279,15 @@ class ChainAwareAttention(BaseAttention):
     ) -> None:
         # Don't pass qk_norm to base class - we handle it separately for self/cross paths
         super().__init__(
-            d_model, n_heads, head_dim, dropout, bias, max_seq_len,
-            qk_norm="none", norm_type=norm_type, layer_norm_eps=layer_norm_eps,
+            d_model,
+            n_heads,
+            head_dim,
+            dropout,
+            bias,
+            max_seq_len,
+            qk_norm="none",
+            norm_type=norm_type,
+            layer_norm_eps=layer_norm_eps,
             hybrid_norm=hybrid_norm,
             rope_fraction=rope_fraction,
         )
@@ -452,8 +468,15 @@ class SharedQKVChainAwareAttention(BaseAttention):
                 "Set hybrid_norm='none' or use chain_aware_projection_mode='separate'."
             )
         super().__init__(
-            d_model, n_heads, head_dim, dropout, bias, max_seq_len,
-            qk_norm=qk_norm, norm_type=norm_type, layer_norm_eps=layer_norm_eps,
+            d_model,
+            n_heads,
+            head_dim,
+            dropout,
+            bias,
+            max_seq_len,
+            qk_norm=qk_norm,
+            norm_type=norm_type,
+            layer_norm_eps=layer_norm_eps,
             hybrid_norm=False,
             rope_fraction=rope_fraction,
         )

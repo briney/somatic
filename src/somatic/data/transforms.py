@@ -87,8 +87,12 @@ class SequenceTruncation(Transform):
             if example.get("light_cdr_mask") is not None:
                 example["light_cdr_mask"] = example["light_cdr_mask"][:light_len]
             if example.get("heavy_non_templated_mask") is not None:
-                example["heavy_non_templated_mask"] = example["heavy_non_templated_mask"][:heavy_len]
+                example["heavy_non_templated_mask"] = example["heavy_non_templated_mask"][
+                    :heavy_len
+                ]
             if example.get("light_non_templated_mask") is not None:
-                example["light_non_templated_mask"] = example["light_non_templated_mask"][:light_len]
+                example["light_non_templated_mask"] = example["light_non_templated_mask"][
+                    :light_len
+                ]
 
         return example

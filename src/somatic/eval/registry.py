@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from omegaconf import DictConfig, OmegaConf
 
-from .base import Metric
+if TYPE_CHECKING:
+    from .base import Metric
 
 # Global registry mapping metric names to their classes
 METRIC_REGISTRY: dict[str, type[Metric]] = {}
@@ -60,7 +61,7 @@ def list_metrics() -> list[str]:
     return list(METRIC_REGISTRY.keys())
 
 
-def _get_eval_config(cfg: "DictConfig", eval_name: str | None) -> dict[str, Any]:
+def _get_eval_config(cfg: DictConfig, eval_name: str | None) -> dict[str, Any]:
     """Get the eval dataset configuration.
 
     Args:
@@ -84,7 +85,7 @@ def _get_eval_config(cfg: "DictConfig", eval_name: str | None) -> dict[str, Any]
 
 
 def _get_metric_config(
-    cfg: "DictConfig",
+    cfg: DictConfig,
     metric_name: str,
     eval_name: str | None,
 ) -> dict[str, Any]:
@@ -111,7 +112,7 @@ def _get_metric_config(
         global_metric_cfg = global_metrics[metric_name]
         # Handle both dict and OmegaConf DictConfig
         if isinstance(global_metric_cfg, DictConfig):
-            result.update(OmegaConf.to_container(global_metric_cfg))
+            result.update(cast("dict", OmegaConf.to_container(global_metric_cfg)))
         elif isinstance(global_metric_cfg, dict):
             result.update(global_metric_cfg)
 
@@ -120,19 +121,18 @@ def _get_metric_config(
         dataset_cfg = _get_eval_config(cfg, eval_name)
         dataset_metrics = dataset_cfg.get("metrics", {})
 
-        # Check if this metric is in the 'only' whitelist
+        # Check if this metric is in the 'only' whitelist. If 'only' is specified,
+        # disable metrics not in the list by default.
         only_list = dataset_metrics.get("only")
-        if only_list is not None:
-            # If 'only' is specified, disable metrics not in the list by default
-            if metric_name not in only_list:
-                result["enabled"] = False
+        if only_list is not None and metric_name not in only_list:
+            result["enabled"] = False
 
         # Apply per-metric overrides
         if metric_name in dataset_metrics:
             metric_override = dataset_metrics[metric_name]
             # Handle both dict and OmegaConf DictConfig
             if isinstance(metric_override, DictConfig):
-                result.update(OmegaConf.to_container(metric_override))
+                result.update(cast("dict", OmegaConf.to_container(metric_override)))
             elif isinstance(metric_override, dict):
                 result.update(metric_override)
 
@@ -140,7 +140,7 @@ def _get_metric_config(
 
 
 def _get_dataset_has_coords(
-    cfg: "DictConfig",
+    cfg: DictConfig,
     eval_name: str | None,
     global_has_coords: bool,
 ) -> bool:
@@ -162,7 +162,7 @@ def _get_dataset_has_coords(
 
 
 def build_metrics(
-    cfg: "DictConfig",
+    cfg: DictConfig,
     has_coords: bool = False,
     eval_name: str | None = None,
 ) -> list[Metric]:
@@ -217,6 +217,6 @@ def build_metrics(
             metrics.append(metric)
         except Exception as e:
             # Log warning but don't fail - allows graceful degradation
-            warnings.warn(f"Failed to instantiate metric '{name}': {e}")
+            warnings.warn(f"Failed to instantiate metric '{name}': {e}", stacklevel=2)
 
     return metrics

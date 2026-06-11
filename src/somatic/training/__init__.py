@@ -4,8 +4,8 @@ from .checkpoint import CheckpointConfig, CheckpointManager
 from .flops import FLOPsConfig, FLOPsTracker
 from .masking_frequency import MaskingFrequencyConfig, MaskingFrequencyTracker
 from .metrics import (
-    MLMMetrics,
     MetricAccumulator,
+    MLMMetrics,
     compute_accuracy,
     compute_masked_cross_entropy,
     compute_mlm_metrics,

@@ -22,24 +22,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
-from torch.utils.data import DataLoader
 
 from ..utils.progress import ProgressManager
-from .cross_chain_config import CrossChainEvalConfig
 from .region_eval import _get_model_device
 
 if TYPE_CHECKING:
     from accelerate import Accelerator
+    from torch.utils.data import DataLoader
 
     from ..model import SomaticModel
+    from .cross_chain_config import CrossChainEvalConfig
 
 
 def _slice_batch(batch: dict, start: int, end: int) -> dict:
     """Slice all tensor fields of a batch along the batch dimension."""
-    return {
-        k: (v[start:end] if isinstance(v, torch.Tensor) else v)
-        for k, v in batch.items()
-    }
+    return {k: (v[start:end] if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
 
 
 def _build_masks(
@@ -83,9 +80,7 @@ def _build_masks(
     rank_from_end = (total_heavy - heavy_cum + 1) * heavy_pos.long()
     last_n_heavy = heavy_pos & (rank_from_end >= 1) & (rank_from_end <= interface_n)
 
-    interface_pair = (
-        last_n_heavy.unsqueeze(2) & first_n_light.unsqueeze(1)
-    ) | (
+    interface_pair = (last_n_heavy.unsqueeze(2) & first_n_light.unsqueeze(1)) | (
         first_n_light.unsqueeze(2) & last_n_heavy.unsqueeze(1)
     )  # (B, S, S)
 
@@ -98,10 +93,10 @@ def _build_masks(
 
 
 def run_cross_chain_eval(
-    model: "SomaticModel",
+    model: SomaticModel,
     eval_loader: DataLoader,
     config: CrossChainEvalConfig,
-    accelerator: "Accelerator | None",
+    accelerator: Accelerator | None,
     show_progress: bool,
     progress: ProgressManager | None = None,
 ) -> dict[str, float]:
@@ -143,8 +138,7 @@ def run_cross_chain_eval(
 
             if accelerator is None:
                 batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
                 }
 
             outer_B = batch["token_ids"].shape[0]

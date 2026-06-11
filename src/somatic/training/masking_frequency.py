@@ -6,11 +6,11 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from torch import Tensor
-
 from ..eval.regions import AGGREGATE_GROUP_NAMES, INDIVIDUAL_REGION_NAMES
 
 if TYPE_CHECKING:
+    from torch import Tensor
+
     from ..eval.regions import AntibodyRegion
 
 
@@ -195,14 +195,16 @@ class MaskingFrequencyTracker:
 
         # Handle germline/nongermline tracking (position-based, not region-based)
         non_templated_mask = batch.get("non_templated_mask")
-        if non_templated_mask is None:
-            # Warn once if germline/nongermline tracking enabled but mask missing
-            if "germline" in enabled_aggregates or "nongermline" in enabled_aggregates:
-                warnings.warn(
-                    "germline/nongermline masking frequency tracking enabled but "
-                    "non_templated_mask not found in batch. Ensure data has columns matching "
-                    "heavy_nongermline_col and light_nongermline_col config settings."
-                )
+        # Warn if germline/nongermline tracking enabled but mask missing
+        if non_templated_mask is None and (
+            "germline" in enabled_aggregates or "nongermline" in enabled_aggregates
+        ):
+            warnings.warn(
+                "germline/nongermline masking frequency tracking enabled but "
+                "non_templated_mask not found in batch. Ensure data has columns matching "
+                "heavy_nongermline_col and light_nongermline_col config settings.",
+                stacklevel=2,
+            )
         if non_templated_mask is not None:
             if "germline" in enabled_aggregates:
                 if "germline" not in self._region_counts:

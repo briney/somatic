@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from omegaconf import DictConfig
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 
 @dataclass
@@ -160,6 +161,7 @@ def parse_train_config(
     fractions: dict[str, float | None] = {}
 
     for name, dataset_cfg in train_cfg.items():
+        name = str(name)  # OmegaConf keys are typed broadly; dataset names are strings
         if isinstance(dataset_cfg, str):
             # Shorthand: just a path
             paths[name] = dataset_cfg
@@ -247,6 +249,7 @@ def parse_eval_config(
     result: dict[str, DatasetConfig] = {}
 
     for name, cfg in eval_cfg.items():
+        name = str(name)  # OmegaConf keys are typed broadly; dataset names are strings
         if isinstance(cfg, str):
             # Shorthand: just a path
             result[name] = DatasetConfig(path=cfg)

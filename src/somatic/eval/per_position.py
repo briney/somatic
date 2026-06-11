@@ -81,10 +81,7 @@ class PerPositionEvaluator:
             - "prob": probability assigned to correct token
         """
         # Move sample to device
-        sample = {
-            k: v.to(self.device) if isinstance(v, Tensor) else v
-            for k, v in sample.items()
-        }
+        sample = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in sample.items()}
 
         token_ids = sample["token_ids"]
         chain_ids = sample["chain_ids"]
@@ -105,9 +102,7 @@ class PerPositionEvaluator:
         if self.progress is not None:
             task_cm = self.progress.eval_task("Per-position eval", total=n_steps)
         elif self.show_progress:
-            task_cm = ProgressManager.standalone_eval_task(
-                "Per-position eval", total=n_steps
-            )
+            task_cm = ProgressManager.standalone_eval_task("Per-position eval", total=n_steps)
         else:
             task_cm = ProgressManager.standalone_eval_task(
                 "Per-position eval", total=n_steps, disable=True
@@ -154,7 +149,7 @@ class PerPositionEvaluator:
 
                     # Probability
                     probs = torch.softmax(pos_logits, dim=-1)
-                    prob = probs[target].item()
+                    prob = probs[int(target)].item()
 
                     results[pos] = {
                         "correct": correct,
@@ -190,10 +185,7 @@ class PerPositionEvaluator:
             - "count": number of positions in region
         """
         # Need batch dimension for extract_region_masks
-        batch = {
-            k: v.unsqueeze(0) if isinstance(v, Tensor) else v
-            for k, v in sample.items()
-        }
+        batch = {k: v.unsqueeze(0) if isinstance(v, Tensor) else v for k, v in sample.items()}
 
         # Extract region masks
         region_masks = extract_region_masks(batch, regions)
@@ -287,16 +279,10 @@ class RegionMaskingEvaluator:
             - "count": number of positions in region
         """
         # Move sample to device
-        sample = {
-            k: v.to(self.device) if isinstance(v, Tensor) else v
-            for k, v in sample.items()
-        }
+        sample = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in sample.items()}
 
         # Need batch dimension for extract_region_masks
-        batch = {
-            k: v.unsqueeze(0) if isinstance(v, Tensor) else v
-            for k, v in sample.items()
-        }
+        batch = {k: v.unsqueeze(0) if isinstance(v, Tensor) else v for k, v in sample.items()}
 
         # Extract target region mask
         region_masks = extract_region_masks(batch, {target_region})
@@ -349,7 +335,7 @@ class RegionMaskingEvaluator:
 
                 # Probability
                 probs = torch.softmax(pos_logits, dim=-1)
-                total_prob += probs[target].item()
+                total_prob += probs[int(target)].item()
 
         count = len(positions)
         return {

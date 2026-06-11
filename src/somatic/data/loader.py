@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from omegaconf import DictConfig
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from .collator import AntibodyCollator
@@ -15,6 +14,12 @@ from .dataset import (
     StructureDataset,
     detect_dataset_format,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from pathlib import Path
+
+    from omegaconf import DictConfig
 
 
 def create_dataloader(
@@ -88,7 +93,7 @@ def create_dataloader(
 
 
 def create_multi_dataloader(
-    data_paths: dict[str, str | Path],
+    data_paths: Mapping[str, str | Path],
     weights: dict[str, float] | None,
     batch_size: int,
     max_length: int = 320,
@@ -151,7 +156,7 @@ def create_multi_dataloader(
     multi_dataset = MultiDataset(datasets, weights)
 
     sampler = WeightedRandomSampler(
-        weights=multi_dataset.get_sampler_weights(),
+        weights=multi_dataset.get_sampler_weights().tolist(),
         num_samples=len(multi_dataset),
         replacement=True,
     )

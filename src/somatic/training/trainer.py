@@ -7,24 +7,25 @@ from typing import TYPE_CHECKING
 
 import torch
 from accelerate import Accelerator
-from torch.utils.data import DataLoader
 
 from ..masking import InformationWeightedMasker, UniformMasker
-from ..model import SomaticModel
 from ..utils.progress import ProgressManager
 from .checkpoint import CheckpointConfig, CheckpointManager
 from .flops import FLOPsConfig, FLOPsTracker
 from .masking_frequency import MaskingFrequencyConfig, MaskingFrequencyTracker
 from .metrics import (
-    MLMMetrics,
     MetricAccumulator,
+    MLMMetrics,
     compute_masked_cross_entropy,
     compute_mlm_metrics,
 )
 from .optimizer import create_optimizer, create_scheduler, get_lr
 
 if TYPE_CHECKING:
+    from torch.utils.data import DataLoader
+
     from ..eval import Evaluator
+    from ..model import SomaticModel
 
 
 _VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
@@ -108,7 +109,7 @@ class Trainer:
         train_dataloader: DataLoader,
         eval_dataloader: DataLoader | None = None,
         eval_dataloaders: dict[str, DataLoader] | None = None,
-        evaluator: "Evaluator | None" = None,
+        evaluator: Evaluator | None = None,
         accelerator: Accelerator | None = None,
         masking_frequency_config: MaskingFrequencyConfig | None = None,
         flops_config: FLOPsConfig | None = None,
@@ -167,19 +168,14 @@ class Trainer:
             # never engages). Disabling graph-splitting keeps SAC intact; the only cost
             # is the lost comm/compute overlap. Gate on `selective` only so `full`/`none`
             # keep the default overlap. The flag is a process-global dynamo config.
-            if (
-                getattr(model.config, "gradient_checkpointing_mode", "none")
-                == "selective"
-            ):
+            if getattr(model.config, "gradient_checkpointing_mode", "none") == "selective":
                 # `from torch import _dynamo` (not `import torch._dynamo`) so the local
                 # binding is `_dynamo`, not `torch` — the latter would shadow the
                 # module-level `torch` used elsewhere in this method.
                 from torch import _dynamo
 
                 _dynamo.config.optimize_ddp = False
-            self.model = torch.compile(
-                self.model, dynamic=True, mode=config.compile_mode
-            )
+            self.model = torch.compile(self.model, dynamic=True, mode=config.compile_mode)
 
         # Support both single eval_dataloader (legacy) and multiple eval_dataloaders
         self.eval_dataloader = (
@@ -217,9 +213,7 @@ class Trainer:
         # yielding the raw SomaticModel — clean (no `_orig_mod.` prefix) state_dict
         # keys for checkpointing and direct `.config` access. Harmless when not
         # compiled. Without this, a compiled model would save unloadable checkpoints.
-        unwrapped_model = self.accelerator.unwrap_model(
-            self.model, keep_torch_compile=False
-        )
+        unwrapped_model = self.accelerator.unwrap_model(self.model, keep_torch_compile=False)
         self.checkpoint_manager = CheckpointManager(
             checkpoint_config,
             unwrapped_model,
@@ -258,7 +252,7 @@ class Trainer:
         """Set the logger for training metrics."""
         self.logger = logger
 
-    def set_evaluator(self, evaluator: "Evaluator") -> None:
+    def set_evaluator(self, evaluator: Evaluator) -> None:
         """Set the evaluator for advanced metrics.
 
         Args:
@@ -287,9 +281,7 @@ class Trainer:
 
         return {"masked_ids": masked_ids, "mask_labels": mask_labels}
 
-    def training_step(
-        self, batch: dict[str, torch.Tensor]
-    ) -> tuple[torch.Tensor, MLMMetrics]:
+    def training_step(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, MLMMetrics]:
         """Execute a single training step.
 
         Returns:
@@ -358,10 +350,12 @@ class Trainer:
 
         self.model.train()
 
+        # These metrics are populated every eval batch; coalesce guards the
+        # empty-dataloader edge case where compute() returns None.
         return {
-            "val_loss": eval_metrics.compute("loss"),
-            "val_accuracy": eval_metrics.compute("accuracy"),
-            "val_perplexity": eval_metrics.compute("perplexity"),
+            "val_loss": eval_metrics.compute("loss") or 0.0,
+            "val_accuracy": eval_metrics.compute("accuracy") or 0.0,
+            "val_perplexity": eval_metrics.compute("perplexity") or 0.0,
         }
 
     def evaluate_all(self) -> dict[str, dict[str, float]]:
@@ -404,9 +398,7 @@ class Trainer:
             eval_tracker.reset()
 
             eval_task_cm = (
-                self._progress_manager.eval_task(
-                    f"Eval ({eval_name})", total=len(eval_loader)
-                )
+                self._progress_manager.eval_task(f"Eval ({eval_name})", total=len(eval_loader))
                 if self._progress_manager is not None
                 else ProgressManager.standalone_eval_task(
                     f"Eval ({eval_name})",
@@ -441,9 +433,9 @@ class Trainer:
                     progress_task.advance()
 
             all_results[eval_name] = {
-                "loss": eval_metrics.compute("loss"),
-                "accuracy": eval_metrics.compute("accuracy"),
-                "perplexity": eval_metrics.compute("perplexity"),
+                "loss": eval_metrics.compute("loss") or 0.0,
+                "accuracy": eval_metrics.compute("accuracy") or 0.0,
+                "perplexity": eval_metrics.compute("perplexity") or 0.0,
             }
 
             # Add masking frequency metrics

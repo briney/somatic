@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 from torch import Tensor
 
 from ..base import MetricBase
 from ..registry import register_metric
+
+if TYPE_CHECKING:
+    from ...model.transformer import ModelOutput
 
 
 class ProbeMetricBase(MetricBase):
@@ -46,7 +49,7 @@ class ProbeMetricBase(MetricBase):
     @abstractmethod
     def extract_features(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract features from model outputs.
@@ -77,7 +80,7 @@ class ProbeMetricBase(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -115,8 +118,6 @@ class ProbeMetricBase(MetricBase):
         except ImportError:
             return {self.name: 0.0}
 
-        import numpy as np
-
         # Prepare data
         X = torch.cat(self._features, dim=0).numpy()
         y = torch.cat(self._targets, dim=0).numpy()
@@ -145,7 +146,6 @@ class ProbeMetricBase(MetricBase):
             C=1.0 / self.regularization,
             max_iter=self.max_iterations,
             solver="lbfgs",
-            multi_class="auto",
         )
 
         try:
@@ -160,7 +160,7 @@ class ProbeMetricBase(MetricBase):
         self._features = []
         self._targets = []
 
-    def state_objects(self) -> list[Any] | None:
+    def state_objects(self) -> dict[str, Any] | None:
         """Return state for distributed gathering."""
         return {"features": self._features, "targets": self._targets}
 
@@ -174,8 +174,8 @@ class ProbeMetricBase(MetricBase):
                 all_features.extend(item.get("features", []))
                 all_targets.extend(item.get("targets", []))
 
-        self._features = all_features[:self.n_train]
-        self._targets = all_targets[:self.n_train]
+        self._features = all_features[: self.n_train]
+        self._targets = all_targets[: self.n_train]
 
 
 @register_metric("chain_probe")
@@ -204,7 +204,7 @@ class ChainProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract pooled embeddings per chain.
@@ -222,7 +222,7 @@ class ChainProbeMetric(ProbeMetricBase):
         features = []
 
         for chain_id in [0, 1]:  # 0 = heavy, 1 = light
-            chain_mask = (chain_ids == chain_id)
+            chain_mask = chain_ids == chain_id
             if attention_mask is not None:
                 chain_mask = chain_mask & attention_mask.bool()
 
@@ -264,7 +264,7 @@ class ChainProbeMetric(ProbeMetricBase):
         labels = []
 
         for chain_id in [0, 1]:
-            chain_mask = (chain_ids == chain_id)
+            chain_mask = chain_ids == chain_id
             if attention_mask is not None:
                 chain_mask = chain_mask & attention_mask.bool()
 
@@ -308,7 +308,7 @@ class PositionProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract embeddings at sampled positions."""
@@ -397,7 +397,7 @@ class CDRProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract embeddings at sampled positions."""
@@ -419,7 +419,7 @@ class CDRProbeMetric(ProbeMetricBase):
                 continue
 
             # Sample positions
-            sample_indices = torch.randperm(len(valid_indices))[:self.sample_per_seq]
+            sample_indices = torch.randperm(len(valid_indices))[: self.sample_per_seq]
             selected_positions = valid_indices[sample_indices]
 
             for pos in selected_positions:
@@ -454,7 +454,7 @@ class CDRProbeMetric(ProbeMetricBase):
             # Sample same positions as in extract_features
             # Note: This relies on deterministic sampling which may not match
             # In practice, we'd want to store the sampled indices
-            sample_indices = torch.randperm(len(valid_indices))[:self.sample_per_seq]
+            sample_indices = torch.randperm(len(valid_indices))[: self.sample_per_seq]
             selected_positions = valid_indices[sample_indices]
 
             for pos in selected_positions:
