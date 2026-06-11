@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 import torch
 from torch import Tensor
+
+if TYPE_CHECKING:
+    from ..model.transformer import ModelOutput
 
 
 @runtime_checkable
@@ -27,7 +30,7 @@ class Metric(Protocol):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -76,6 +79,19 @@ class Metric(Protocol):
         """
         ...
 
+    def state_objects(self) -> dict[str, Any] | list[Any] | None:
+        """Return variable-length state as Python objects, or None.
+
+        Metrics whose state cannot use tensor-based gathering (e.g. probes that
+        accumulate variable numbers of feature vectors) return a non-None value
+        here, which routes gathering through ``gather_object``.
+        """
+        ...
+
+    def load_state_objects(self, gathered: list[Any]) -> None:
+        """Load state from gathered Python objects (see ``state_objects``)."""
+        ...
+
 
 class MetricBase(ABC):
     """Abstract base class for metrics with default implementations.
@@ -102,7 +118,7 @@ class MetricBase(ABC):
     @abstractmethod
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -138,7 +154,7 @@ class MetricBase(ABC):
             self._total = state[0].item()
             self._count = int(state[1].item())
 
-    def state_objects(self) -> list[Any] | None:
+    def state_objects(self) -> dict[str, Any] | list[Any] | None:
         """Return state as Python objects for distributed gathering.
 
         Used for metrics with variable-length state that cannot use
@@ -154,7 +170,8 @@ class MetricBase(ABC):
         """
         return None
 
-    def load_state_objects(self, gathered: list[Any]) -> None:
+    # Intentional no-op default: only metrics with object-based state override this.
+    def load_state_objects(self, gathered: list[Any]) -> None:  # noqa: B027
         """Load state from gathered Python objects.
 
         Called after gather_object collects data from all processes.

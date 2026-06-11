@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import torch
 from torch import Tensor
 
 from ..tokenizer import tokenizer
+
+
+class EncodedPair(TypedDict):
+    """Token-level encoding of a single heavy/light pair.
+
+    ``cdr_mask`` and ``nt_mask`` are ``None`` when the corresponding input
+    masks are unavailable.
+    """
+
+    token_ids: list[int]
+    chain_ids: list[int]
+    cdr_mask: list[int] | None
+    nt_mask: list[int] | None
+    special_mask: list[int]
 
 
 class AntibodyCollator:
@@ -32,7 +46,7 @@ class AntibodyCollator:
         light_cdr: list[int] | None,
         heavy_nt: list[int] | None,
         light_nt: list[int] | None,
-    ) -> dict[str, list[int]]:
+    ) -> EncodedPair:
         heavy_ids = tokenizer.encode(heavy, add_special_tokens=False)
         light_ids = tokenizer.encode(light, add_special_tokens=False)
 
@@ -121,7 +135,7 @@ class AntibodyCollator:
         padding = np.zeros((target_len - current_len, 3), dtype=np.float32)
         return np.concatenate([coords, padding], axis=0)
 
-    def __call__(self, batch: list[dict[str, Any]]) -> dict[str, Tensor]:
+    def __call__(self, batch: list[dict[str, Any]]) -> dict[str, Tensor | None]:
         encoded = []
         coords_list = []
 
@@ -167,11 +181,16 @@ class AntibodyCollator:
             special_masks.append(self._pad_sequence(enc["special_mask"], pad_len, 1))
 
             if has_cdr:
-                cdr_masks.append(self._pad_sequence(enc["cdr_mask"], pad_len, 0))
+                cdr = enc["cdr_mask"]
+                assert cdr is not None
+                cdr_masks.append(self._pad_sequence(cdr, pad_len, 0))
             if has_nt:
-                nt_masks.append(self._pad_sequence(enc["nt_mask"], pad_len, 0))
-            if has_coords and coords_list[i] is not None:
-                padded_coords.append(self._pad_coords(coords_list[i], pad_len))
+                nt = enc["nt_mask"]
+                assert nt is not None
+                nt_masks.append(self._pad_sequence(nt, pad_len, 0))
+            coords_i = coords_list[i]
+            if has_coords and coords_i is not None:
+                padded_coords.append(self._pad_coords(coords_i, pad_len))
 
         result = {
             "token_ids": torch.tensor(token_ids, dtype=torch.long),

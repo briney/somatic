@@ -37,12 +37,12 @@ from .per_position import PerPositionEvaluator, RegionMaskingEvaluator
 from .region_config import RegionEvalConfig, build_region_eval_config
 from .regions import (
     AGGREGATE_GROUP_NAMES,
-    AntibodyRegion,
     CDR_REGIONS,
     FWR_REGIONS,
     HEAVY_REGIONS,
     INDIVIDUAL_REGION_NAMES,
     LIGHT_REGIONS,
+    AntibodyRegion,
     aggregate_region_masks,
     extract_region_masks,
 )

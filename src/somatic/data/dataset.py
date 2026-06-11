@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+
+class SizedDataset(Protocol):
+    """A map-style dataset that supports ``len()`` and integer indexing."""
+
+    def __len__(self) -> int: ...
+    def __getitem__(self, index: int) -> Any: ...
+
 
 # Supported structure file extensions
 STRUCTURE_EXTENSIONS = {".pdb", ".ent", ".cif", ".mmcif"}
@@ -83,9 +94,10 @@ def _get_one_letter_code(res_name: str) -> str:
     if res_name in AA3TO1:
         return AA3TO1[res_name]
 
-    # Try Biopython's three_to_one for standard residues
+    # Try Biopython's three_to_one for standard residues. Removed in Biopython
+    # >=1.80, so the import may fail at runtime (caught below).
     try:
-        from Bio.PDB.Polypeptide import three_to_one
+        from Bio.PDB.Polypeptide import three_to_one  # ty: ignore[unresolved-import]
 
         return three_to_one(res_name)
     except (KeyError, ImportError):
@@ -124,11 +136,8 @@ def parse_structure(
 
     suffix = path.suffix.lower()
 
-    # Select parser based on file extension
-    if suffix in {".cif", ".mmcif"}:
-        parser = MMCIFParser(QUIET=True)
-    else:  # .pdb, .ent, or unknown
-        parser = PDBParser(QUIET=True)
+    # Select parser based on file extension (.pdb/.ent/unknown fall back to PDBParser)
+    parser = MMCIFParser(QUIET=True) if suffix in {".cif", ".mmcif"} else PDBParser(QUIET=True)
 
     try:
         structure = parser.get_structure(path.stem, str(path))
@@ -199,7 +208,7 @@ def parse_structure(
     )
 
 
-class AntibodyDataset(Dataset):
+class AntibodyDataset(Dataset[dict[str, Any]]):
     """
     Dataset for paired antibody heavy/light chain sequences.
 
@@ -243,9 +252,7 @@ class AntibodyDataset(Dataset):
         if heavy_col not in self.df.columns or light_col not in self.df.columns:
             raise ValueError(f"Missing required columns: {heavy_col}, {light_col}")
 
-        self.has_cdr_mask = (
-            heavy_cdr_col in self.df.columns and light_cdr_col in self.df.columns
-        )
+        self.has_cdr_mask = heavy_cdr_col in self.df.columns and light_cdr_col in self.df.columns
         self.has_nt_mask = (
             heavy_nongermline_col in self.df.columns and light_nongermline_col in self.df.columns
         )
@@ -272,7 +279,11 @@ class AntibodyDataset(Dataset):
                 self.heavy_nongermline_col: str,
                 self.light_nongermline_col: str,
             }
-            return pd.read_csv(self.data_path, sep=sep, dtype=dtype_overrides)
+            # pandas accepts a {column: type} dtype map at runtime; the stub
+            # overload set does not model it cleanly.
+            return pd.read_csv(  # ty: ignore[no-matching-overload]
+                self.data_path, sep=sep, dtype=dtype_overrides
+            )
         else:
             raise ValueError(f"Unsupported file format: {self.data_path.suffix}")
 
@@ -342,8 +353,8 @@ class AntibodyDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        row = self.df.iloc[idx]
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        row = self.df.iloc[index]
 
         result = {
             "heavy_chain": row[self.heavy_col],
@@ -374,12 +385,12 @@ class AntibodyDataset(Dataset):
         return result
 
 
-class MultiDataset(Dataset):
+class MultiDataset(Dataset[dict[str, Any]]):
     """Combines multiple datasets with weighted sampling."""
 
     def __init__(
         self,
-        datasets: dict[str, Dataset],
+        datasets: Mapping[str, SizedDataset],
         weights: dict[str, float] | None = None,
     ) -> None:
         self.datasets = datasets
@@ -405,7 +416,7 @@ class MultiDataset(Dataset):
 
     def _build_sampling_probs(self) -> None:
         probs = []
-        for name, local_idx in self.index_map:
+        for name, _local_idx in self.index_map:
             prob = self.weights[name] / self.lengths[name]
             probs.append(prob)
 
@@ -415,8 +426,8 @@ class MultiDataset(Dataset):
     def __len__(self) -> int:
         return self.total_length
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        dataset_name, local_idx = self.index_map[idx]
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        dataset_name, local_idx = self.index_map[index]
         item = self.datasets[dataset_name][local_idx]
         item["_dataset"] = dataset_name
         return item
@@ -425,7 +436,7 @@ class MultiDataset(Dataset):
         return torch.tensor(self.sampling_probs)
 
 
-class StructureDataset(Dataset):
+class StructureDataset(Dataset[dict[str, torch.Tensor | str]]):
     """Dataset for a folder of PDB/mmCIF structure files.
 
     This dataset is designed for evaluation with structure-based metrics.
@@ -514,7 +525,7 @@ class StructureDataset(Dataset):
         """Return number of structure files in the dataset."""
         return len(self._files)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor | str]:
         """Load and parse a structure file.
 
         Args:
@@ -530,7 +541,7 @@ class StructureDataset(Dataset):
 
             Note: 'indices' key is NOT included (not available for raw structures).
         """
-        path = self._files[idx]
+        path = self._files[index]
 
         # Parse structure
         data = parse_structure(
@@ -622,25 +633,20 @@ def detect_dataset_format(path: str | Path) -> str:
 
         # Check for structure files
         structure_files = [
-            p
-            for p in path.iterdir()
-            if p.is_file() and p.suffix.lower() in STRUCTURE_EXTENSIONS
+            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in STRUCTURE_EXTENSIONS
         ]
         if structure_files:
             return "structure"
 
         # Check subdirectories recursively for structure files
         structure_files_recursive = [
-            p
-            for p in path.rglob("*")
-            if p.is_file() and p.suffix.lower() in STRUCTURE_EXTENSIONS
+            p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in STRUCTURE_EXTENSIONS
         ]
         if structure_files_recursive:
             return "structure"
 
         raise ValueError(
-            f"Cannot determine format for directory {path}. "
-            f"No parquet or structure files found."
+            f"Cannot determine format for directory {path}. No parquet or structure files found."
         )
 
     raise ValueError(f"Path is neither a file nor a directory: {path}")

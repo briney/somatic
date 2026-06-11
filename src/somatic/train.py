@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any, cast
 
 import torch
 from accelerate import Accelerator
@@ -109,9 +110,7 @@ def _validate_mixed_precision(value: str) -> None:
     """
     if value not in _ALLOWED_MIXED_PRECISION:
         allowed = ", ".join(sorted(_ALLOWED_MIXED_PRECISION))
-        raise ValueError(
-            f"train.mixed_precision must be one of {{{allowed}}}, got {value!r}"
-        )
+        raise ValueError(f"train.mixed_precision must be one of {{{allowed}}}, got {value!r}")
 
 
 def _build_masking_frequency_config(cfg: DictConfig) -> MaskingFrequencyConfig:
@@ -256,9 +255,7 @@ def run_training(
         attention_dropout=cfg.model.attention_dropout,
         embedding_dropout=cfg.model.embedding_dropout,
         use_chain_aware_attention=cfg.model.use_chain_aware_attention,
-        chain_aware_projection_mode=cfg.model.get(
-            "chain_aware_projection_mode", "separate"
-        ),
+        chain_aware_projection_mode=cfg.model.get("chain_aware_projection_mode", "separate"),
         norm_type=cfg.model.norm_type,
         pre_norm=cfg.model.pre_norm,
         post_norm=cfg.model.post_norm,
@@ -266,9 +263,7 @@ def run_training(
         layer_norm_eps=cfg.model.layer_norm_eps,
         hybrid_norm=cfg.model.hybrid_norm,
         gradient_checkpointing=cfg.model.get("gradient_checkpointing", False),
-        gradient_checkpointing_mode=cfg.model.get(
-            "gradient_checkpointing_mode", "full"
-        ),
+        gradient_checkpointing_mode=cfg.model.get("gradient_checkpointing_mode", "full"),
     )
     model = SomaticModel(model_config)
     accelerator.print(f"Model parameters: {model.get_num_params():,}")
@@ -356,7 +351,7 @@ def run_training(
         logger = WandbLogger(
             project=cfg.log.wandb.project,
             name=cfg.name,
-            config=OmegaConf.to_container(cfg, resolve=True),
+            config=cast("dict[str, Any]", OmegaConf.to_container(cfg, resolve=True)),
             entity=cfg.log.wandb.entity,
             tags=list(cfg.log.wandb.tags) if cfg.log.wandb.tags else None,
             notes=cfg.log.wandb.notes,

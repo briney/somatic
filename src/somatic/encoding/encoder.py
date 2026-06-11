@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
 import torch
 from torch import Tensor
 
@@ -13,6 +12,11 @@ from ..model import SomaticModel
 from ..tokenizer import tokenizer
 from ..utils.progress import ProgressManager
 from .pooling import MeanMaxPooling, PoolingStrategy, create_pooling
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import numpy as np
 
 
 class SomaticEncoder:
@@ -52,9 +56,7 @@ class SomaticEncoder:
         else:
             self.pooling = pooling
 
-        self.collator = AntibodyCollator(
-            max_length=model.config.max_seq_len, pad_to_max=False
-        )
+        self.collator = AntibodyCollator(max_length=model.config.max_seq_len, pad_to_max=False)
 
     @classmethod
     def from_pretrained(
@@ -62,7 +64,7 @@ class SomaticEncoder:
         model_path: str | Path,
         device: str = "cpu",
         pooling: str | None = None,
-    ) -> "SomaticEncoder":
+    ) -> SomaticEncoder:
         """Load an encoder from a pretrained checkpoint.
 
         Parameters
@@ -93,31 +95,23 @@ class SomaticEncoder:
             "light_non_templated_mask": None,
         }
         batch = self.collator([example])
-        return {
-            k: v.to(self.device) if isinstance(v, Tensor) else v
-            for k, v in batch.items()
-        }
+        return {k: v.to(self.device) for k, v in batch.items() if isinstance(v, Tensor)}
 
-    def _prepare_batch(
-        self, heavy_chains: list[str], light_chains: list[str]
-    ) -> dict[str, Tensor]:
+    def _prepare_batch(self, heavy_chains: list[str], light_chains: list[str]) -> dict[str, Tensor]:
         """Prepare a batch of sequence pairs for encoding."""
         examples = [
             {
                 "heavy_chain": h,
-                "light_chain": l,
+                "light_chain": light,
                 "heavy_cdr_mask": None,
                 "light_cdr_mask": None,
                 "heavy_non_templated_mask": None,
                 "light_non_templated_mask": None,
             }
-            for h, l in zip(heavy_chains, light_chains)
+            for h, light in zip(heavy_chains, light_chains, strict=False)
         ]
         batch = self.collator(examples)
-        return {
-            k: v.to(self.device) if isinstance(v, Tensor) else v
-            for k, v in batch.items()
-        }
+        return {k: v.to(self.device) for k, v in batch.items() if isinstance(v, Tensor)}
 
     @torch.no_grad()
     def encode(
@@ -488,17 +482,15 @@ class SomaticEncoder:
         mask_positions = token_ids[:seq_len] == tokenizer.mask_token_id
         if mask_positions.any():
             predictions = logits[:seq_len].argmax(dim=-1)
-            token_ids[:seq_len] = torch.where(
-                mask_positions, predictions, token_ids[:seq_len]
-            )
+            token_ids[:seq_len] = torch.where(mask_positions, predictions, token_ids[:seq_len])
 
         # Split into heavy and light chains
         # Heavy: chain_id == 0, excluding CLS (position 0)
         # Light: chain_id == 1, excluding EOS (last position)
-        heavy_mask = (chain_ids[:seq_len] == 0)
+        heavy_mask = chain_ids[:seq_len] == 0
         heavy_mask[0] = False  # Exclude CLS
 
-        light_mask = (chain_ids[:seq_len] == 1)
+        light_mask = chain_ids[:seq_len] == 1
         light_mask[seq_len - 1] = False  # Exclude EOS
 
         heavy_ids = token_ids[:seq_len][heavy_mask].tolist()

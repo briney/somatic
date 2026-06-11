@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
 from torch import Tensor
 
 from ..base import MetricBase
 from ..registry import register_metric
+
+if TYPE_CHECKING:
+    from ...model.transformer import ModelOutput
 
 
 def compute_distance_matrix(coords: Tensor) -> Tensor:
@@ -185,9 +188,7 @@ class PrecisionAtLMetric(MetricBase):
         num_layers = self.num_layers or 1
 
         # Select layers
-        if self.attention_layer == "last":
-            selected = attentions[-num_layers:]
-        elif self.attention_layer == "mean":
+        if self.attention_layer == "last" or self.attention_layer == "mean":
             selected = attentions[-num_layers:]
         elif isinstance(self.attention_layer, int):
             selected = [attentions[self.attention_layer]]
@@ -240,7 +241,7 @@ class PrecisionAtLMetric(MetricBase):
             valid_len = attention_mask[b].sum().item()
             L = int(valid_len)
 
-            if L < self.min_seq_sep + 1:
+            if self.min_seq_sep + 1 > L:
                 continue
 
             # Create sequence separation mask
@@ -248,11 +249,16 @@ class PrecisionAtLMetric(MetricBase):
             sep_mask = (indices.unsqueeze(0) - indices.unsqueeze(1)).abs() >= self.min_seq_sep
 
             # Get upper triangle with separation constraint
-            triu_mask = torch.triu(torch.ones(seq_len, seq_len, device=predictions.device), diagonal=1)
+            triu_mask = torch.triu(
+                torch.ones(seq_len, seq_len, device=predictions.device), diagonal=1
+            )
             valid_mask = triu_mask * sep_mask.float()
 
             # Apply attention mask
-            valid_mask = valid_mask * (attention_mask[b].unsqueeze(0) * attention_mask[b].unsqueeze(1)).float()
+            valid_mask = (
+                valid_mask
+                * (attention_mask[b].unsqueeze(0) * attention_mask[b].unsqueeze(1)).float()
+            )
 
             # Get predictions and targets for valid positions
             pred_scores = predictions[b] * valid_mask
@@ -283,7 +289,7 @@ class PrecisionAtLMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -302,9 +308,7 @@ class PrecisionAtLMetric(MetricBase):
             return
 
         # Compute ground truth contacts
-        contacts = compute_contact_map(
-            coords, self.contact_threshold, attention_mask
-        )
+        contacts = compute_contact_map(coords, self.contact_threshold, attention_mask)
 
         if self.use_logistic_regression:
             # Store features for later logistic regression
@@ -312,9 +316,7 @@ class PrecisionAtLMetric(MetricBase):
         else:
             # Direct attention-based prediction
             predictions = self._get_attention_prediction(attentions, attention_mask)
-            correct, total = self._compute_precision_at_l(
-                predictions, contacts, attention_mask
-            )
+            correct, total = self._compute_precision_at_l(predictions, contacts, attention_mask)
             self._correct += correct
             self._total += total
 
@@ -347,7 +349,6 @@ class PrecisionAtLMetric(MetricBase):
             # Get features for this sequence
             features = all_attn[b]  # (n_layers, n_heads, seq, seq)
             target = contacts[b]  # (seq, seq)
-            mask = attention_mask[b]  # (seq,)
 
             self._logreg_features.append(features.cpu())
             self._logreg_targets.append(target.cpu())
@@ -384,10 +385,9 @@ class PrecisionAtLMetric(MetricBase):
         all_features = []
         all_targets = []
 
-        for features, targets in zip(self._logreg_features, self._logreg_targets):
+        for features, targets in zip(self._logreg_features, self._logreg_targets, strict=False):
             # Flatten to get feature vectors for each position pair
             n_layers, n_heads, seq_len, _ = features.shape
-            n_features = n_layers * n_heads
 
             # Get upper triangle with sequence separation
             indices = torch.arange(seq_len)
@@ -460,7 +460,7 @@ class PrecisionAtLMetric(MetricBase):
             self._correct = int(state[0].item())
             self._total = int(state[1].item())
 
-    def state_objects(self) -> list[Any] | None:
+    def state_objects(self) -> dict[str, Any] | None:
         """Return state objects for logreg mode."""
         if self.use_logistic_regression:
             return {
@@ -487,7 +487,7 @@ class PrecisionAtLMetric(MetricBase):
                     total_correct += item.get("correct", 0)
                     total_count += item.get("total", 0)
 
-            self._logreg_features = all_features[:self.logreg_n_train]
-            self._logreg_targets = all_targets[:self.logreg_n_train]
+            self._logreg_features = all_features[: self.logreg_n_train]
+            self._logreg_targets = all_targets[: self.logreg_n_train]
             self._correct = total_correct
             self._total = total_count

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
-class AntibodyRegion(str, Enum):
+
+class AntibodyRegion(StrEnum):
     """Antibody structural regions.
 
     Regions follow the standard antibody structure:
@@ -63,12 +67,8 @@ HEAVY_REGIONS = frozenset({r for r in AntibodyRegion if r.value.startswith("h")}
 LIGHT_REGIONS = frozenset({r for r in AntibodyRegion if r.value.startswith("l")})
 
 # CDR regions per chain
-HEAVY_CDR_REGIONS = frozenset(
-    {AntibodyRegion.HCDR1, AntibodyRegion.HCDR2, AntibodyRegion.HCDR3}
-)
-LIGHT_CDR_REGIONS = frozenset(
-    {AntibodyRegion.LCDR1, AntibodyRegion.LCDR2, AntibodyRegion.LCDR3}
-)
+HEAVY_CDR_REGIONS = frozenset({AntibodyRegion.HCDR1, AntibodyRegion.HCDR2, AntibodyRegion.HCDR3})
+LIGHT_CDR_REGIONS = frozenset({AntibodyRegion.LCDR1, AntibodyRegion.LCDR2, AntibodyRegion.LCDR3})
 
 # Region name constants for iteration (used by config classes)
 INDIVIDUAL_REGION_NAMES = (
@@ -240,15 +240,15 @@ def _extract_cdr_boundaries(
     for cdr_value in [1, 2, 3]:  # CDR1, CDR2, CDR3
         cdr_positions = ((cdr_mask == cdr_value) & chain_mask).nonzero(as_tuple=True)[0]
         if len(cdr_positions) > 0:
-            start = cdr_positions[0].item()
-            end = cdr_positions[-1].item() + 1
+            start = int(cdr_positions[0].item())
+            end = int(cdr_positions[-1].item()) + 1
             regions.append((start, end))
 
     return regions
 
 
 def extract_region_masks(
-    batch: dict[str, Tensor],
+    batch: Mapping[str, Tensor | None],
     regions: set[AntibodyRegion] | None = None,
 ) -> dict[AntibodyRegion, Tensor]:
     """Extract per-region boolean masks from batch data.
@@ -283,6 +283,7 @@ def extract_region_masks(
 
     if cdr_mask is None:
         raise ValueError("cdr_mask is required to extract region masks")
+    assert chain_ids is not None and attention_mask is not None
 
     batch_size, seq_len = chain_ids.shape
     device = chain_ids.device
@@ -342,13 +343,11 @@ def extract_region_masks(
             # Process heavy chain frameworks
             heavy_positions = seq_heavy_mask.nonzero(as_tuple=True)[0]
             if len(heavy_positions) > 0:
-                heavy_start = heavy_positions[0].item()
-                heavy_end = heavy_positions[-1].item() + 1
+                heavy_start = int(heavy_positions[0].item())
+                heavy_end = int(heavy_positions[-1].item()) + 1
 
                 # Get CDR boundaries from detailed mask
-                heavy_cdr_regions = _extract_cdr_boundaries(
-                    seq_cdr_mask, seq_heavy_mask
-                )
+                heavy_cdr_regions = _extract_cdr_boundaries(seq_cdr_mask, seq_heavy_mask)
                 if len(heavy_cdr_regions) == 3:
                     fwr_regions = _infer_framework_regions(
                         heavy_cdr_regions, heavy_start, heavy_end, seq_special
@@ -366,13 +365,11 @@ def extract_region_masks(
             # Process light chain frameworks
             light_positions = seq_light_mask.nonzero(as_tuple=True)[0]
             if len(light_positions) > 0:
-                light_start = light_positions[0].item()
-                light_end = light_positions[-1].item() + 1
+                light_start = int(light_positions[0].item())
+                light_end = int(light_positions[-1].item()) + 1
 
                 # Get CDR boundaries from detailed mask
-                light_cdr_regions = _extract_cdr_boundaries(
-                    seq_cdr_mask, seq_light_mask
-                )
+                light_cdr_regions = _extract_cdr_boundaries(seq_cdr_mask, seq_light_mask)
                 if len(light_cdr_regions) == 3:
                     fwr_regions = _infer_framework_regions(
                         light_cdr_regions, light_start, light_end, seq_special
@@ -455,38 +452,28 @@ def aggregate_region_masks(
         # Aggregate by CDR/FWR number across chains
         # CDR1 (heavy + light)
         cdr1_masks = [
-            m
-            for r, m in region_masks.items()
-            if r in {AntibodyRegion.HCDR1, AntibodyRegion.LCDR1}
+            m for r, m in region_masks.items() if r in {AntibodyRegion.HCDR1, AntibodyRegion.LCDR1}
         ]
         if cdr1_masks:
             result["cdr1"] = torch.stack(cdr1_masks).any(dim=0)
 
         # CDR2
         cdr2_masks = [
-            m
-            for r, m in region_masks.items()
-            if r in {AntibodyRegion.HCDR2, AntibodyRegion.LCDR2}
+            m for r, m in region_masks.items() if r in {AntibodyRegion.HCDR2, AntibodyRegion.LCDR2}
         ]
         if cdr2_masks:
             result["cdr2"] = torch.stack(cdr2_masks).any(dim=0)
 
         # CDR3
         cdr3_masks = [
-            m
-            for r, m in region_masks.items()
-            if r in {AntibodyRegion.HCDR3, AntibodyRegion.LCDR3}
+            m for r, m in region_masks.items() if r in {AntibodyRegion.HCDR3, AntibodyRegion.LCDR3}
         ]
         if cdr3_masks:
             result["cdr3"] = torch.stack(cdr3_masks).any(dim=0)
 
         # Frameworks
         for i in range(1, 5):
-            fwr_masks = [
-                m
-                for r, m in region_masks.items()
-                if r.value.endswith(f"fwr{i}")
-            ]
+            fwr_masks = [m for r, m in region_masks.items() if r.value.endswith(f"fwr{i}")]
             if fwr_masks:
                 result[f"fwr{i}"] = torch.stack(fwr_masks).any(dim=0)
 

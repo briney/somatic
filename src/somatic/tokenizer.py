@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import TYPE_CHECKING
 
 from tokenizers import Regex
 from tokenizers import Tokenizer as HFTokenizer
@@ -11,6 +12,9 @@ from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Sequence, Split
 from tokenizers.processors import TemplateProcessing
 from transformers import PreTrainedTokenizerFast
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 __all__ = [
     "Tokenizer",
@@ -195,7 +199,7 @@ class Tokenizer(PreTrainedTokenizerFast):
         light_chain: str,
         add_chain_separator: bool = False,
         return_tensors: str | None = None,
-    ) -> dict[str, list[int]]:
+    ) -> dict[str, list[int]] | dict[str, Tensor]:
         """
         Encode paired heavy/light chain sequences.
 
@@ -264,12 +268,7 @@ class Tokenizer(PreTrainedTokenizerFast):
             )
         else:
             # <cls> heavy light <eos>
-            input_ids = (
-                [self.cls_token_id]
-                + heavy_ids
-                + light_ids
-                + [self.eos_token_id]
-            )
+            input_ids = [self.cls_token_id] + heavy_ids + light_ids + [self.eos_token_id]
             # Chain IDs: CLS and heavy = 0, light and EOS = 1
             chain_ids = (
                 [0] * (1 + len(heavy_ids))  # CLS + heavy

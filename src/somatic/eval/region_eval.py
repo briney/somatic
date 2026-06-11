@@ -8,28 +8,28 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
-from torch.utils.data import DataLoader
 
 from ..utils.progress import ProgressManager
 from .per_position import PerPositionEvaluator, RegionMaskingEvaluator
-from .region_config import RegionEvalConfig
 from .regions import (
-    AntibodyRegion,
     CDR_REGIONS,
     FWR_REGIONS,
     HEAVY_REGIONS,
     LIGHT_REGIONS,
+    AntibodyRegion,
     extract_region_masks,
 )
 
 if TYPE_CHECKING:
     from accelerate import Accelerator
+    from torch.utils.data import DataLoader
 
     from ..model import SomaticModel
     from .masking import EvalMasker
+    from .region_config import RegionEvalConfig
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -72,7 +72,7 @@ def _compute_individual_region_results(
     return results
 
 
-def _get_model_device(model: "SomaticModel", accelerator: "Accelerator | None") -> torch.device:
+def _get_model_device(model: SomaticModel, accelerator: Accelerator | None) -> torch.device:
     """Get the device the model is on."""
     if accelerator is not None:
         return accelerator.device
@@ -101,7 +101,7 @@ def _accumulate_positions(
 
 
 def _evaluate_masked_group(
-    model: "SomaticModel",
+    model: SomaticModel,
     token_ids: torch.Tensor,
     group_mask: torch.Tensor,
     chain_ids: torch.Tensor,
@@ -191,9 +191,7 @@ def compute_aggregate_metrics(
         Aggregated metrics with / separator.
     """
 
-    def _metrics_from_accumulator(
-        acc: dict[str, float], prefix: str
-    ) -> dict[str, float]:
+    def _metrics_from_accumulator(acc: dict[str, float], prefix: str) -> dict[str, float]:
         """Convert accumulator to metric dict with prefix."""
         if acc["count"] <= 0:
             return {}
@@ -255,12 +253,12 @@ def compute_aggregate_metrics(
 
 
 def run_standard_eval(
-    model: "SomaticModel",
+    model: SomaticModel,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     config: RegionEvalConfig,
-    accelerator: "Accelerator | None",
-    eval_masker: "EvalMasker | None",
+    accelerator: Accelerator | None,
+    eval_masker: EvalMasker | None,
     create_eval_mask,
     show_progress: bool,
     progress: ProgressManager | None = None,
@@ -316,8 +314,7 @@ def run_standard_eval(
             # Move batch to device if not using accelerator
             if accelerator is None:
                 batch = {
-                    k: v.to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
+                    k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
                 }
 
             # Skip if no CDR mask available
@@ -362,9 +359,7 @@ def run_standard_eval(
 
             # Extract region masks
             try:
-                target_regions = (
-                    all_regions_needed if all_regions_needed else set(AntibodyRegion)
-                )
+                target_regions = all_regions_needed if all_regions_needed else set(AntibodyRegion)
                 region_masks = extract_region_masks(batch, target_regions)
             except ValueError:
                 continue
@@ -390,12 +385,13 @@ def run_standard_eval(
 
             # Handle germline/nongermline aggregates (position-based, not region-based)
             non_templated_mask = batch.get("non_templated_mask")
-            if non_templated_mask is None:
-                if not warned_missing_mask and (
-                    "germline" in enabled_aggs or "nongermline" in enabled_aggs
-                ):
-                    warnings.warn(_GERMLINE_WARNING)
-                    warned_missing_mask = True
+            if (
+                non_templated_mask is None
+                and not warned_missing_mask
+                and ("germline" in enabled_aggs or "nongermline" in enabled_aggs)
+            ):
+                warnings.warn(_GERMLINE_WARNING, stacklevel=2)
+                warned_missing_mask = True
             if non_templated_mask is not None:
                 if "germline" in enabled_aggs:
                     if "germline" not in region_accumulators:
@@ -433,12 +429,12 @@ def run_standard_eval(
 
 
 def run_per_position_eval(
-    model: "SomaticModel",
+    model: SomaticModel,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     position_batch_size: int,
     config: RegionEvalConfig,
-    accelerator: "Accelerator | None",
+    accelerator: Accelerator | None,
     show_progress: bool,
     progress: ProgressManager | None = None,
 ) -> dict[str, float]:
@@ -497,9 +493,7 @@ def run_per_position_eval(
             batch_size = batch["token_ids"].shape[0]
             for i in range(batch_size):
                 # Extract single sample
-                sample = {
-                    k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()
-                }
+                sample = {k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
                 # === OPTIMIZED: Collect all positions upfront ===
                 # 1. Extract region masks to get positions per region
@@ -512,7 +506,7 @@ def run_per_position_eval(
                     target_regions = all_regions_needed if all_regions_needed else None
                     region_masks = extract_region_masks(batch_sample, target_regions)
                 except (ValueError, KeyError) as e:
-                    warnings.warn(f"Region mask extraction failed for sample: {e}")
+                    warnings.warn(f"Region mask extraction failed for sample: {e}", stacklevel=2)
                     continue
 
                 # Build position-to-region mapping and collect all region positions
@@ -532,15 +526,13 @@ def run_per_position_eval(
                     non_templated_mask = sample.get("non_templated_mask")
                     if non_templated_mask is None:
                         if not warned_missing_mask:
-                            warnings.warn(_GERMLINE_WARNING)
+                            warnings.warn(_GERMLINE_WARNING, stacklevel=2)
                             warned_missing_mask = True
                     else:
                         # Get valid positions (exclude special tokens and padding)
                         attention_mask = sample.get("attention_mask")
                         special_tokens_mask = sample.get("special_tokens_mask")
-                        valid_mask = (
-                            attention_mask.bool() if attention_mask is not None else None
-                        )
+                        valid_mask = attention_mask.bool() if attention_mask is not None else None
                         if valid_mask is not None and special_tokens_mask is not None:
                             valid_mask = valid_mask & ~special_tokens_mask.bool()
 
@@ -548,9 +540,7 @@ def run_per_position_eval(
                             germline_mask = non_templated_mask == 0
                             if valid_mask is not None:
                                 germline_mask = germline_mask & valid_mask
-                            germline_positions = germline_mask.nonzero(as_tuple=True)[
-                                0
-                            ].tolist()
+                            germline_positions = germline_mask.nonzero(as_tuple=True)[0].tolist()
                             all_positions_needed.update(germline_positions)
 
                         if needs_nongermline:
@@ -572,7 +562,7 @@ def run_per_position_eval(
                         sample, list(all_positions_needed)
                     )
                 except Exception as e:
-                    warnings.warn(f"Per-position evaluation failed for sample: {e}")
+                    warnings.warn(f"Per-position evaluation failed for sample: {e}", stacklevel=2)
                     continue
 
                 # 4. Aggregate by region
@@ -603,11 +593,11 @@ def run_per_position_eval(
 
 
 def run_region_level_eval(
-    model: "SomaticModel",
+    model: SomaticModel,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     config: RegionEvalConfig,
-    accelerator: "Accelerator | None",
+    accelerator: Accelerator | None,
     show_progress: bool,
     progress: ProgressManager | None = None,
 ) -> dict[str, float]:
@@ -656,16 +646,14 @@ def run_region_level_eval(
             batch_size = batch["token_ids"].shape[0]
             for i in range(batch_size):
                 # Extract single sample
-                sample = {
-                    k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()
-                }
+                sample = {k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
                 # Evaluate all regions
                 try:
                     target_regions = all_regions_needed if all_regions_needed else None
                     sample_results = evaluator.evaluate_all_regions(sample, target_regions)
                 except Exception as e:
-                    warnings.warn(f"Region evaluation failed for sample: {e}")
+                    warnings.warn(f"Region evaluation failed for sample: {e}", stacklevel=2)
                     continue
 
                 # Accumulate results
@@ -686,7 +674,7 @@ def run_region_level_eval(
                     non_templated_mask = sample.get("non_templated_mask")
                     if non_templated_mask is None:
                         if not warned_missing_mask:
-                            warnings.warn(_GERMLINE_WARNING)
+                            warnings.warn(_GERMLINE_WARNING, stacklevel=2)
                             warned_missing_mask = True
                     else:
                         # Move sample to device
@@ -712,15 +700,18 @@ def run_region_level_eval(
                             if not group_flag:
                                 continue
                             group_mask = (
-                                (non_templated == (0 if group_name == "germline" else 1))
-                                & valid_mask
-                            )
+                                non_templated == (0 if group_name == "germline" else 1)
+                            ) & valid_mask
                             if not group_mask.any():
                                 continue
                             try:
                                 result = _evaluate_masked_group(
-                                    model, token_ids, group_mask,
-                                    chain_ids, attention_mask, device,
+                                    model,
+                                    token_ids,
+                                    group_mask,
+                                    chain_ids,
+                                    attention_mask,
+                                    device,
                                 )
                                 if group_name not in region_accumulators:
                                     region_accumulators[group_name] = _make_accumulator()
@@ -730,7 +721,9 @@ def run_region_level_eval(
                                 acc["total_prob"] += result["total_prob"]
                                 acc["count"] += result["count"]
                             except Exception as e:
-                                warnings.warn(f"{group_name.title()} evaluation failed: {e}")
+                                warnings.warn(
+                                    f"{group_name.title()} evaluation failed: {e}", stacklevel=2
+                                )
 
             progress_task.advance()
 

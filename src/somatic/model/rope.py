@@ -25,6 +25,11 @@ class RotaryPositionEmbedding(nn.Module):
             un-rotated).
     """
 
+    # Registered buffers (declared for static typing; created in __init__).
+    inv_freq: Tensor
+    cos_cached: Tensor
+    sin_cached: Tensor
+
     def __init__(
         self,
         dim: int,
@@ -53,9 +58,7 @@ class RotaryPositionEmbedding(nn.Module):
             self.register_buffer("inv_freq", torch.zeros(0), persistent=False)
         else:
             # Precompute frequency bands sized to rotated_dim.
-            inv_freq = 1.0 / (
-                base ** (torch.arange(0, rotated_dim, 2).float() / rotated_dim)
-            )
+            inv_freq = 1.0 / (base ** (torch.arange(0, rotated_dim, 2).float() / rotated_dim))
             self.register_buffer("inv_freq", inv_freq, persistent=False)
             self._build_cache(max_seq_len)
 

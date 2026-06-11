@@ -70,8 +70,7 @@ class EvalMasker:
             )
         else:
             raise ValueError(
-                f"Unknown masker_type: {masker_type}. "
-                "Must be 'uniform' or 'information_weighted'."
+                f"Unknown masker_type: {masker_type}. Must be 'uniform' or 'information_weighted'."
             )
 
     def get_generator(self, device: torch.device) -> torch.Generator:
@@ -134,6 +133,7 @@ class EvalMasker:
             )
         else:
             # Information-weighted masking
+            assert isinstance(self._masker, InformationWeightedMasker)
             return self._masker.apply_mask(
                 token_ids=token_ids,
                 attention_mask=attention_mask,

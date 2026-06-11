@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 try:
     import wandb
@@ -42,9 +42,7 @@ class WandbLogger:
             resume="allow" if resume else None,
         )
 
-    def log(
-        self, metrics: dict[str, Any], step: int | None = None, commit: bool = True
-    ) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None, commit: bool = True) -> None:
         """Log metrics to WandB."""
         if not self.enabled:
             return
@@ -109,9 +107,15 @@ class WandbLogger:
             return
         artifact = wandb.Artifact(name, type=artifact_type, metadata=metadata)
         artifact.add_file(artifact_path)
+        assert self.run is not None
         self.run.log_artifact(artifact)
 
-    def watch(self, model: Any, log: str = "gradients", log_freq: int = 100) -> None:
+    def watch(
+        self,
+        model: Any,
+        log: Literal["gradients", "parameters", "all"] = "gradients",
+        log_freq: int = 100,
+    ) -> None:
         """Watch model gradients and parameters."""
         if not self.enabled:
             return

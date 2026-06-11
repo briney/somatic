@@ -126,9 +126,7 @@ class QKVNormModule(nn.Module):
         self.k_norm = create_norm_layer(norm_type, head_dim, eps)
         self.v_norm = create_norm_layer(norm_type, head_dim, eps)
 
-    def forward(
-        self, q: Tensor, k: Tensor, v: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """
         Apply normalization to Q, K, and V.
 

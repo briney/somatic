@@ -67,13 +67,10 @@ def dataclass_to_dict(obj: Any) -> dict[str, Any]:
         if is_dataclass(value):
             result[field.name] = dataclass_to_dict(value)
         elif isinstance(value, (list, tuple)):
-            result[field.name] = [
-                dataclass_to_dict(v) if is_dataclass(v) else v for v in value
-            ]
+            result[field.name] = [dataclass_to_dict(v) if is_dataclass(v) else v for v in value]
         elif isinstance(value, dict):
             result[field.name] = {
-                k: dataclass_to_dict(v) if is_dataclass(v) else v
-                for k, v in value.items()
+                k: dataclass_to_dict(v) if is_dataclass(v) else v for k, v in value.items()
             }
         else:
             result[field.name] = value
@@ -108,7 +105,7 @@ def dict_to_dataclass(cls: type[T], data: dict[str, Any]) -> T:
 
         value = data[field_name]
 
-        if is_dataclass(field_type) and isinstance(value, dict):
+        if isinstance(field_type, type) and is_dataclass(field_type) and isinstance(value, dict):
             kwargs[field_name] = dict_to_dataclass(field_type, value)
         else:
             kwargs[field_name] = value
@@ -142,9 +139,7 @@ def merge_configs(base: dict[str, Any], override: dict[str, Any]) -> dict[str, A
     return result
 
 
-def flatten_config(
-    config: dict[str, Any], prefix: str = "", sep: str = "."
-) -> dict[str, Any]:
+def flatten_config(config: dict[str, Any], prefix: str = "", sep: str = ".") -> dict[str, Any]:
     """Flatten a nested configuration dictionary.
 
     Parameters

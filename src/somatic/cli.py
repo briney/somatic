@@ -24,13 +24,9 @@ def main() -> None:
     default="configs",
     help="Config file (.yaml) or config directory (default: configs)",
 )
-@click.option(
-    "--output-dir", "-o", type=click.Path(), default="outputs", help="Output directory"
-)
+@click.option("--output-dir", "-o", type=click.Path(), default="outputs", help="Output directory")
 @click.option("--name", "-n", default="somatic_experiment", help="Experiment name")
-@click.option(
-    "--resume", type=click.Path(exists=True), help="Checkpoint to resume from"
-)
+@click.option("--resume", type=click.Path(exists=True), help="Checkpoint to resume from")
 @click.option("--seed", type=int, default=42, help="Random seed")
 @click.option("--wandb/--no-wandb", default=True, help="Enable/disable WandB")
 @click.argument("overrides", nargs=-1)
@@ -77,12 +73,8 @@ def train(
     required=True,
     help="Model checkpoint",
 )
-@click.option(
-    "--input", "-i", type=click.Path(exists=True), required=True, help="Input file"
-)
-@click.option(
-    "--output", "-o", type=click.Path(), required=True, help="Output file (.pt or .npy)"
-)
+@click.option("--input", "-i", type=click.Path(exists=True), required=True, help="Input file")
+@click.option("--output", "-o", type=click.Path(), required=True, help="Output file (.pt or .npy)")
 @click.option(
     "--pooling",
     "-p",
@@ -124,10 +116,7 @@ def encode(
 
     click.echo(f"Loading data from {input}...")
 
-    if input.endswith(".parquet"):
-        df = pd.read_parquet(input)
-    else:
-        df = pd.read_csv(input)
+    df = pd.read_parquet(input) if input.endswith(".parquet") else pd.read_csv(input)
 
     heavy_chains = df["heavy_chain"].tolist()
     light_chains = df["light_chain"].tolist()
@@ -217,9 +206,7 @@ def model_size(
                 config_dir = config_path
                 config_name = "config"
 
-        stack.enter_context(
-            initialize_config_dir(config_dir=str(config_dir), version_base=None)
-        )
+        stack.enter_context(initialize_config_dir(config_dir=str(config_dir), version_base=None))
 
         cfg = compose(config_name=config_name, overrides=list(overrides))
 
@@ -238,9 +225,7 @@ def model_size(
         attention_dropout=cfg.model.attention_dropout,
         embedding_dropout=cfg.model.embedding_dropout,
         use_chain_aware_attention=cfg.model.use_chain_aware_attention,
-        chain_aware_projection_mode=cfg.model.get(
-            "chain_aware_projection_mode", "separate"
-        ),
+        chain_aware_projection_mode=cfg.model.get("chain_aware_projection_mode", "separate"),
         norm_type=cfg.model.norm_type,
         pre_norm=cfg.model.pre_norm,
         post_norm=cfg.model.post_norm,

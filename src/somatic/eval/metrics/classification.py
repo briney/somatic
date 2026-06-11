@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import torch
 from torch import Tensor
 
 from ..base import MetricBase
 from ..registry import register_metric
+
+if TYPE_CHECKING:
+    from ...model.transformer import ModelOutput
 
 
 @register_metric("masked_accuracy")
@@ -31,7 +34,7 @@ class MaskedAccuracyMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -100,7 +103,7 @@ class _MaskedCrossEntropyMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: ModelOutput,
         batch: dict[str, Tensor | None],
         mask_labels: Tensor,
     ) -> None:
@@ -113,6 +116,7 @@ class _MaskedCrossEntropyMetric(MetricBase):
         """
         logits = outputs["logits"]
         targets = batch["token_ids"]
+        assert targets is not None
 
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)

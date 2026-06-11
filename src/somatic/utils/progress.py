@@ -10,8 +10,8 @@ and replaced by the next cycle's bars.
 from __future__ import annotations
 
 import sys
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Iterator
+from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.progress import (
@@ -26,6 +26,8 @@ from rich.progress import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from accelerate import Accelerator
 
 
@@ -91,7 +93,7 @@ class ProgressManager:
 
     def __init__(
         self,
-        accelerator: "Accelerator | None" = None,
+        accelerator: Accelerator | None = None,
         disable: bool = False,
     ) -> None:
         if accelerator is not None and not accelerator.is_local_main_process:
@@ -102,7 +104,7 @@ class ProgressManager:
         self._eval_task_ids: list[TaskID] = []
         self._started = False
 
-    def __enter__(self) -> "ProgressManager":
+    def __enter__(self) -> ProgressManager:
         self._progress.start()
         self._started = True
         return self
@@ -116,9 +118,7 @@ class ProgressManager:
         """Add the persistent training bar. Call once."""
         if self._disabled:
             return TaskID(-1)
-        self._train_task_id = self._progress.add_task(
-            "Training", total=total, completed=start
-        )
+        self._train_task_id = self._progress.add_task("Training", total=total, completed=start)
         return self._train_task_id
 
     def advance_train(self, n: int = 1) -> None:
@@ -133,10 +133,8 @@ class ProgressManager:
         if self._disabled:
             return
         for task_id in self._eval_task_ids:
-            try:
+            with suppress(KeyError):
                 self._progress.remove_task(task_id)
-            except KeyError:
-                pass
         self._eval_task_ids = []
 
     @contextmanager
@@ -156,9 +154,7 @@ class ProgressManager:
         finally:
             # Snap to 100% so the final time is what the user sees.
             try:
-                task = self._progress.tasks[
-                    [t.id for t in self._progress.tasks].index(task_id)
-                ]
+                task = self._progress.tasks[[t.id for t in self._progress.tasks].index(task_id)]
                 if task.total is not None and task.completed < task.total:
                     self._progress.update(task_id, completed=task.total)
             except (ValueError, IndexError):

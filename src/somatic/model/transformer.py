@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import asdict, dataclass
+from typing import NotRequired, TypedDict
 
 import torch
 import torch.nn as nn
@@ -13,6 +14,20 @@ from ..tokenizer import tokenizer
 from .embeddings import SomaticEmbedding
 from .layers import TransformerEncoder
 from .normalization import RMSNorm
+
+
+class ModelOutput(TypedDict):
+    """Structured return type of :meth:`SomaticModel.forward`.
+
+    ``logits`` and ``hidden_states`` are always present; the tuple-valued
+    ``all_hidden_states`` and ``attentions`` are only included when the
+    corresponding ``output_*`` flag is set.
+    """
+
+    logits: Tensor
+    hidden_states: Tensor
+    all_hidden_states: NotRequired[tuple[Tensor, ...]]
+    attentions: NotRequired[tuple[Tensor, ...]]
 
 
 @dataclass
@@ -99,9 +114,7 @@ class SomaticConfig:
 
         # Validate rope_fraction
         if not 0.0 <= self.rope_fraction <= 1.0:
-            raise ValueError(
-                f"rope_fraction must be in [0.0, 1.0], got {self.rope_fraction}"
-            )
+            raise ValueError(f"rope_fraction must be in [0.0, 1.0], got {self.rope_fraction}")
 
         # Set default ffn_multiplier if not provided
         if self.ffn_multiplier is None:
@@ -115,9 +128,7 @@ class SomaticConfig:
         # Validate norm_type
         valid_norm_types = {"layernorm", "rmsnorm"}
         if self.norm_type not in valid_norm_types:
-            raise ValueError(
-                f"norm_type must be one of {valid_norm_types}, got '{self.norm_type}'"
-            )
+            raise ValueError(f"norm_type must be one of {valid_norm_types}, got '{self.norm_type}'")
 
         # Validate hybrid_norm
         valid_hybrid_norms = {"none", "standard", "star"}
@@ -165,9 +176,7 @@ class SomaticConfig:
             # Validate qk_norm
             valid_qk_norms = {"none", "norm", "learned_scale"}
             if self.qk_norm not in valid_qk_norms:
-                raise ValueError(
-                    f"qk_norm must be one of {valid_qk_norms}, got '{self.qk_norm}'"
-                )
+                raise ValueError(f"qk_norm must be one of {valid_qk_norms}, got '{self.qk_norm}'")
 
 
 class SomaticModel(nn.Module):
@@ -180,6 +189,11 @@ class SomaticModel(nn.Module):
     def __init__(self, config: SomaticConfig) -> None:
         super().__init__()
         self.config = config
+
+        # __post_init__ resolves these to concrete ints; assert narrows the
+        # declared Optional types for static checkers.
+        assert config.head_dim is not None
+        assert config.d_ffn is not None
 
         self.embeddings = SomaticEmbedding(
             vocab_size=config.vocab_size,
@@ -242,7 +256,7 @@ class SomaticModel(nn.Module):
         attention_mask: Tensor | None = None,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
-    ) -> dict[str, Tensor | tuple[Tensor, ...]]:
+    ) -> ModelOutput:
         """
         Forward pass through the model.
 
@@ -287,7 +301,7 @@ class SomaticModel(nn.Module):
 
         logits = self.lm_head(hidden_states)
 
-        output = {"logits": logits, "hidden_states": hidden_states}
+        output: ModelOutput = {"logits": logits, "hidden_states": hidden_states}
 
         if all_hidden_states is not None:
             output["all_hidden_states"] = all_hidden_states
@@ -378,7 +392,7 @@ class SomaticModel(nn.Module):
         return n_params
 
     @classmethod
-    def from_pretrained(cls, path: str, map_location: str = "cpu") -> "SomaticModel":
+    def from_pretrained(cls, path: str, map_location: str = "cpu") -> SomaticModel:
         checkpoint = torch.load(path, map_location=map_location, weights_only=False)
 
         if "config" not in checkpoint:

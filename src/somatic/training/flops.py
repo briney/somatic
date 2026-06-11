@@ -59,6 +59,7 @@ def compute_model_flops_per_token(config: SomaticConfig) -> int:
     d_model = config.d_model
     n_layers = config.n_layers
     d_ffn = config.d_ffn
+    assert d_ffn is not None, "d_ffn must be resolved (set in SomaticConfig.__post_init__)"
     seq_len = config.max_seq_len
     vocab_size = config.vocab_size
 

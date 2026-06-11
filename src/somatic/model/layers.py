@@ -23,7 +23,8 @@ from .normalization import create_norm_layer
 try:
     from torch.utils.checkpoint import CheckpointPolicy as _CheckpointPolicy
 except ImportError:  # torch < 2.4
-    _CheckpointPolicy = None  # type: ignore[assignment, misc]  # torch<2.4 fallback
+    # None fallback when CheckpointPolicy is absent (torch < 2.4).
+    _CheckpointPolicy = None  # type: ignore[assignment, misc]  # ty: ignore[invalid-assignment]
 
 
 def _build_sac_save_ops() -> frozenset:
@@ -162,6 +163,7 @@ class TransformerBlock(nn.Module):
             rope_fraction=rope_fraction,
         )
 
+        assert d_ffn is not None, "d_ffn must be resolved to a concrete size"
         self.ffn = FusedSwiGLUFFN(d_model=d_model, d_ffn=d_ffn, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -240,9 +242,7 @@ class TransformerBlock(nn.Module):
             x = self.attention_pre_norm(x)
 
         if output_attentions:
-            attn_out, attn_weights = self.attention(
-                x, chain_ids, attention_mask, need_weights=True
-            )
+            attn_out, attn_weights = self.attention(x, chain_ids, attention_mask, need_weights=True)
         else:
             attn_out = self.attention(x, chain_ids, attention_mask, need_weights=False)
 
@@ -253,6 +253,7 @@ class TransformerBlock(nn.Module):
 
         # FFN sublayer. HybridNorm* layer 0 falls through to the Pre-Norm branch.
         if self.hybrid_norm and not self.hybrid_first_layer:
+            assert self.ffn_norm is not None
             normed = self.ffn_norm(x)
             ffn_out = self.ffn(normed)
             x = normed + self.dropout(ffn_out)
@@ -330,9 +331,7 @@ class TransformerEncoder(nn.Module):
 
         self.final_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
 
-    def set_gradient_checkpointing(
-        self, enabled: bool, mode: str | None = None
-    ) -> None:
+    def set_gradient_checkpointing(self, enabled: bool, mode: str | None = None) -> None:
         """Toggle gradient (activation) checkpointing on every block in the stack.
 
         Args:
@@ -341,6 +340,7 @@ class TransformerEncoder(nn.Module):
                 to every block; when None, each block's existing mode is left as-is.
         """
         for block in self.layers:
+            assert isinstance(block, TransformerBlock)
             block.gradient_checkpointing = enabled
             if mode is not None:
                 block.gradient_checkpointing_mode = mode
@@ -352,9 +352,11 @@ class TransformerEncoder(nn.Module):
         attention_mask: Tensor | None = None,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
-    ) -> Tensor | tuple[Tensor, tuple[Tensor, ...]] | tuple[
-        Tensor, tuple[Tensor, ...], tuple[Tensor, ...]
-    ]:
+    ) -> (
+        Tensor
+        | tuple[Tensor, tuple[Tensor, ...]]
+        | tuple[Tensor, tuple[Tensor, ...], tuple[Tensor, ...]]
+    ):
         """
         Forward pass through the transformer encoder.
 
@@ -386,9 +388,7 @@ class TransformerEncoder(nn.Module):
 
         for layer in self.layers:
             if output_attentions:
-                x, attn_weights = layer(
-                    x, chain_ids, attention_mask, output_attentions=True
-                )
+                x, attn_weights = layer(x, chain_ids, attention_mask, output_attentions=True)
                 all_attentions = all_attentions + (attn_weights,)
             else:
                 x = layer(x, chain_ids, attention_mask, output_attentions=False)
