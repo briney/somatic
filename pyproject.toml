@@ -32,6 +32,7 @@ dependencies = [
     "pyarrow",
     "pyyaml",
     "rich",
+    "safetensors",
     "tokenizers",
     # Upper bounds keep CI on the verified-good toolchain. transformers >=5.4 shifts
     # PretrainedConfig attribute typing, and torch 2.12 ships untested stubs; both

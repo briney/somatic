@@ -103,10 +103,10 @@ module-level `_REMOTE_CODE_DEPS` tuple. Pattern: `ref: model/modeling_oplm.py:24
 
 ## Phase 0 — Setup & branch
 
-- [ ] Create a feature branch: `git checkout -b feature/hf-compatibility`.
-- [ ] Confirm `transformers`, `tokenizers`, `safetensors` are declared in
+- [x] Create a feature branch: `git checkout -b feature/hf-compatibility`.
+- [x] Confirm `transformers`, `tokenizers`, `safetensors` are declared in
       `pyproject.toml` dependencies; add/loosen version ranges if missing.
-- [ ] Note: `src/somatic/tokenizer.py` is currently a `PreTrainedTokenizerFast`
+- [x] Note: `src/somatic/tokenizer.py` is currently a `PreTrainedTokenizerFast`
       already — good starting point. `src/somatic/model/transformer.py` holds
       BOTH `SomaticConfig` (dataclass) and `SomaticModel` (`nn.Module`); these
       get split across the two new files.
@@ -115,9 +115,9 @@ module-level `_REMOTE_CODE_DEPS` tuple. Pattern: `ref: model/modeling_oplm.py:24
 
 Pattern: `ref: model/configuration_oplm.py`.
 
-- [ ] Create `src/somatic/model/configuration_somatic.py` with
+- [x] Create `src/somatic/model/configuration_somatic.py` with
       `class SomaticConfig(PretrainedConfig)` and `model_type = "somatic"`.
-- [ ] Keyword-only `__init__(self, *, ...)` accepting all fields (renamed per the
+- [x] Keyword-only `__init__(self, *, ...)` accepting all fields (renamed per the
       map above), special-token ids, `initializer_range`, and classification
       fields. End with:
       ```python
@@ -127,17 +127,17 @@ Pattern: `ref: model/configuration_oplm.py`.
       super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id,
                        eos_token_id=eos_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
       ```
-- [ ] `_resolve_derived_fields()`: `head_dim = hidden_size // num_attention_heads`
+- [x] `_resolve_derived_fields()`: `head_dim = hidden_size // num_attention_heads`
       when None; `intermediate_size` from `ffn_multiplier` (default `8/3`)
       rounded up to a multiple of 64 — port the exact rounding from current
       `transformer.py`'s `d_ffn` logic.
-- [ ] `_validate()`: port all current `SomaticConfig.__post_init__` assertions
+- [x] `_validate()`: port all current `SomaticConfig.__post_init__` assertions
       (`hidden_size % num_attention_heads == 0`, `head_dim * heads == hidden_size`,
       `0 <= rope_fraction <= 1`, enum membership for `norm_type`, `hybrid_norm`,
       `qk_norm`, `gradient_checkpointing_mode`, `chain_aware_projection_mode`).
-- [ ] Do NOT assign `num_labels` as a direct attribute (it's a `PretrainedConfig`
+- [x] Do NOT assign `num_labels` as a direct attribute (it's a `PretrainedConfig`
       property backed by `id2label`/`label2id`).
-- [ ] Delete the dataclass `SomaticConfig` from `transformer.py`.
+- [x] Delete the dataclass `SomaticConfig` from `transformer.py`.
 
 ## Phase 2 — Modeling (`model/modeling_somatic.py`)
 

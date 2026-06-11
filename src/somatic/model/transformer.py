@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import NotRequired, TypedDict
 
 import torch
@@ -11,6 +10,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from ..tokenizer import tokenizer
+from .configuration_somatic import SomaticConfig
 from .embeddings import SomaticEmbedding
 from .layers import TransformerEncoder
 from .normalization import RMSNorm
@@ -28,155 +28,6 @@ class ModelOutput(TypedDict):
     hidden_states: Tensor
     all_hidden_states: NotRequired[tuple[Tensor, ...]]
     attentions: NotRequired[tuple[Tensor, ...]]
-
-
-@dataclass
-class SomaticConfig:
-    """Configuration for Somatic model."""
-
-    vocab_size: int = 32
-    padding_idx: int = 1  # tokenizer.pad_token_id
-
-    d_model: int = 256
-    n_layers: int = 16
-    n_heads: int = 4
-    d_ffn: int | None = None
-    ffn_multiplier: float | None = None  # Default 8/3 when None
-
-    # Deprecated: head_dim is now computed as d_model // n_heads
-    head_dim: int | None = None
-
-    max_seq_len: int = 320
-
-    # Fraction of head_dim to apply RoPE to.
-    # 1.0 = full RoPE (default); 0.0 = NoPE; partial values rotate the first
-    # int(head_dim * rope_fraction) (rounded down to even) dims and pass the
-    # remainder through un-rotated.
-    rope_fraction: float = 1.0
-
-    dropout: float = 0.1
-    attention_dropout: float = 0.1
-    embedding_dropout: float = 0.1
-
-    # If True, use chain-aware attention (MINT-style hybrid attention)
-    # If False, use standard MultiHeadAttention
-    use_chain_aware_attention: bool = True
-
-    # Projection variant for chain-aware attention. Ignored when
-    # use_chain_aware_attention=False.
-    #   "separate" - current behavior: separate Q/K/V for self and cross paths
-    #   "shared"   - one shared Q/K/V projection; intra-chain pairs use RoPE
-    #                scores, inter-chain pairs use no-position scores, merged
-    #                under a single global softmax with a single value path.
-    chain_aware_projection_mode: str = "separate"
-
-    # Normalization options
-    norm_type: str = "layernorm"  # "layernorm" or "rmsnorm"
-    pre_norm: bool = True  # Apply normalization before attention/FFN
-    post_norm: bool = False  # Apply normalization after attention/FFN
-    qk_norm: str = "none"  # "none", "norm", or "learned_scale"
-    layer_norm_eps: float = 1e-6  # Epsilon for normalization layers
-    # HybridNorm block layout (Zhuo et al., arXiv 2503.04598). One of:
-    #   "none"     - disabled; pre_norm/post_norm/qk_norm are used as configured
-    #   "standard" - all layers use HybridNorm: QKV-norm inside attention with
-    #                un-normalized residual + FFN with normed input AND normed
-    #                residual base
-    #   "star"     - HybridNorm* variant: layer 0 is Pre-Norm (with QKV-norm
-    #                in attention); layers 1..N-1 are standard HybridNorm
-    # When non-"none", overrides pre_norm/post_norm/qk_norm (those flags are
-    # ignored). norm_type and layer_norm_eps are still respected.
-    hybrid_norm: str = "none"
-
-    # Gradient (activation) checkpointing. Trades compute for activation memory by
-    # recomputing block activations during backward. Only fires in training mode.
-    #   gradient_checkpointing      - master on/off switch
-    #   gradient_checkpointing_mode - "full" recomputes the whole block; "selective"
-    #     keeps matmul/SDPA outputs resident and recomputes the rest (torch SAC,
-    #     requires torch>=2.4). See TransformerEncoder.set_gradient_checkpointing.
-    gradient_checkpointing: bool = False
-    gradient_checkpointing_mode: str = "full"  # "full" | "selective"
-
-    def __post_init__(self) -> None:
-        # Validate and compute head_dim
-        if self.d_model % self.n_heads != 0:
-            raise ValueError(
-                f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})"
-            )
-        computed_head_dim = self.d_model // self.n_heads
-        if self.head_dim is not None and self.head_dim != computed_head_dim:
-            warnings.warn(
-                f"head_dim is deprecated and computed automatically. "
-                f"Using {computed_head_dim} (d_model // n_heads).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        self.head_dim = computed_head_dim
-
-        # Validate rope_fraction
-        if not 0.0 <= self.rope_fraction <= 1.0:
-            raise ValueError(f"rope_fraction must be in [0.0, 1.0], got {self.rope_fraction}")
-
-        # Set default ffn_multiplier if not provided
-        if self.ffn_multiplier is None:
-            self.ffn_multiplier = 8 / 3
-
-        # Compute d_ffn using ffn_multiplier if not provided
-        if self.d_ffn is None:
-            self.d_ffn = int(self.d_model * self.ffn_multiplier)
-            self.d_ffn = ((self.d_ffn + 63) // 64) * 64
-
-        # Validate norm_type
-        valid_norm_types = {"layernorm", "rmsnorm"}
-        if self.norm_type not in valid_norm_types:
-            raise ValueError(f"norm_type must be one of {valid_norm_types}, got '{self.norm_type}'")
-
-        # Validate hybrid_norm
-        valid_hybrid_norms = {"none", "standard", "star"}
-        if self.hybrid_norm not in valid_hybrid_norms:
-            raise ValueError(
-                f"hybrid_norm must be one of {valid_hybrid_norms}, got '{self.hybrid_norm}'"
-            )
-
-        # Validate gradient_checkpointing_mode
-        valid_gc_modes = {"full", "selective"}
-        if self.gradient_checkpointing_mode not in valid_gc_modes:
-            raise ValueError(
-                f"gradient_checkpointing_mode must be one of {valid_gc_modes}, "
-                f"got '{self.gradient_checkpointing_mode}'"
-            )
-
-        # Validate chain_aware_projection_mode (always, even when chain-aware
-        # attention is disabled, so typos in configs fail loudly).
-        valid_projection_modes = {"separate", "shared"}
-        if self.chain_aware_projection_mode not in valid_projection_modes:
-            raise ValueError(
-                f"chain_aware_projection_mode must be one of {valid_projection_modes}, "
-                f"got '{self.chain_aware_projection_mode}'"
-            )
-
-        # Shared-QKV chain-aware attention does not yet support HybridNorm.
-        if (
-            self.use_chain_aware_attention
-            and self.chain_aware_projection_mode == "shared"
-            and self.hybrid_norm != "none"
-        ):
-            raise ValueError(
-                "chain_aware_projection_mode='shared' is not compatible with "
-                f"hybrid_norm='{self.hybrid_norm}'. Use hybrid_norm='none' or "
-                "chain_aware_projection_mode='separate'."
-            )
-
-        # pre_norm/post_norm/qk_norm are inert when hybrid_norm is enabled, so
-        # skip their validation in that case
-        if self.hybrid_norm == "none":
-            # Validate pre_norm/post_norm - at least one must be True
-            if not self.pre_norm and not self.post_norm:
-                raise ValueError("At least one of pre_norm or post_norm must be True")
-
-            # Validate qk_norm
-            valid_qk_norms = {"none", "norm", "learned_scale"}
-            if self.qk_norm not in valid_qk_norms:
-                raise ValueError(f"qk_norm must be one of {valid_qk_norms}, got '{self.qk_norm}'")
 
 
 class SomaticModel(nn.Module):
