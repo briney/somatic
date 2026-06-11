@@ -265,6 +265,10 @@ def run_training(
         qk_norm=cfg.model.qk_norm,
         layer_norm_eps=cfg.model.layer_norm_eps,
         hybrid_norm=cfg.model.hybrid_norm,
+        gradient_checkpointing=cfg.model.get("gradient_checkpointing", False),
+        gradient_checkpointing_mode=cfg.model.get(
+            "gradient_checkpointing_mode", "full"
+        ),
     )
     model = SomaticModel(model_config)
     accelerator.print(f"Model parameters: {model.get_num_params():,}")
@@ -307,6 +311,8 @@ def run_training(
         save_best=cfg.train.save_best,
         seed=cfg.seed,
         mixed_precision=cfg.train.mixed_precision,
+        compile=cfg.train.compile,
+        compile_mode=cfg.train.compile_mode,
     )
 
     # Build masking frequency config

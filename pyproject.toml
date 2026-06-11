@@ -56,3 +56,8 @@ path = "src/somatic/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/somatic"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

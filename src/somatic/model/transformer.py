@@ -72,6 +72,15 @@ class SomaticConfig:
     # ignored). norm_type and layer_norm_eps are still respected.
     hybrid_norm: str = "none"
 
+    # Gradient (activation) checkpointing. Trades compute for activation memory by
+    # recomputing block activations during backward. Only fires in training mode.
+    #   gradient_checkpointing      - master on/off switch
+    #   gradient_checkpointing_mode - "full" recomputes the whole block; "selective"
+    #     keeps matmul/SDPA outputs resident and recomputes the rest (torch SAC,
+    #     requires torch>=2.4). See TransformerEncoder.set_gradient_checkpointing.
+    gradient_checkpointing: bool = False
+    gradient_checkpointing_mode: str = "full"  # "full" | "selective"
+
     def __post_init__(self) -> None:
         # Validate and compute head_dim
         if self.d_model % self.n_heads != 0:
@@ -115,6 +124,14 @@ class SomaticConfig:
         if self.hybrid_norm not in valid_hybrid_norms:
             raise ValueError(
                 f"hybrid_norm must be one of {valid_hybrid_norms}, got '{self.hybrid_norm}'"
+            )
+
+        # Validate gradient_checkpointing_mode
+        valid_gc_modes = {"full", "selective"}
+        if self.gradient_checkpointing_mode not in valid_gc_modes:
+            raise ValueError(
+                f"gradient_checkpointing_mode must be one of {valid_gc_modes}, "
+                f"got '{self.gradient_checkpointing_mode}'"
             )
 
         # Validate chain_aware_projection_mode (always, even when chain-aware
@@ -189,6 +206,13 @@ class SomaticModel(nn.Module):
             layer_norm_eps=config.layer_norm_eps,
             hybrid_norm=config.hybrid_norm,
             rope_fraction=config.rope_fraction,
+        )
+
+        # Configure gradient (activation) checkpointing from config. Propagates the
+        # on/off flag and mode to every block; the dispatch is gated on training mode,
+        # so inference (eval/encode) bypasses checkpointing regardless of this setting.
+        self.encoder.set_gradient_checkpointing(
+            config.gradient_checkpointing, config.gradient_checkpointing_mode
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
