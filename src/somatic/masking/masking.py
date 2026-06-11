@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from ..tokenizer import tokenizer
+from ..model.tokenization_somatic import tokenizer
 
 
 class InformationWeightedMasker:
@@ -71,15 +71,22 @@ class InformationWeightedMasker:
 
     def apply_mask(
         self,
-        token_ids: Tensor,
+        input_ids: Tensor,
         attention_mask: Tensor,
         cdr_mask: Tensor | None = None,
         non_templated_mask: Tensor | None = None,
         special_tokens_mask: Tensor | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[Tensor, Tensor]:
-        batch_size, seq_len = token_ids.shape
-        device = token_ids.device
+        """Mask high-information positions and build MLM labels.
+
+        Returns:
+            ``(masked_input_ids, labels)`` where ``labels`` is a copy of
+            ``input_ids`` with ``-100`` at every unmasked position (the
+            ``ignore_index`` consumed by the in-model cross-entropy loss).
+        """
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
 
         valid_counts = attention_mask.sum(dim=-1)
 
@@ -121,13 +128,16 @@ class InformationWeightedMasker:
             src=torch.arange(seq_len, device=device).expand(batch_size, -1),
         )
 
-        mask_labels = position_ranks < num_to_mask.unsqueeze(-1)
-        mask_labels = mask_labels & maskable_positions.bool()
+        mask = position_ranks < num_to_mask.unsqueeze(-1)
+        mask = mask & maskable_positions.bool()
 
-        masked_ids = token_ids.clone()
-        masked_ids[mask_labels] = self.mask_token_id
+        masked_input_ids = input_ids.clone()
+        masked_input_ids[mask] = self.mask_token_id
 
-        return masked_ids, mask_labels
+        labels = input_ids.clone()
+        labels[~mask] = -100
+
+        return masked_input_ids, labels
 
 
 class UniformMasker:
@@ -145,13 +155,20 @@ class UniformMasker:
 
     def apply_mask(
         self,
-        token_ids: Tensor,
+        input_ids: Tensor,
         attention_mask: Tensor,
         special_tokens_mask: Tensor | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[Tensor, Tensor]:
-        batch_size, seq_len = token_ids.shape
-        device = token_ids.device
+        """Mask positions uniformly at random and build MLM labels.
+
+        Returns:
+            ``(masked_input_ids, labels)`` where ``labels`` is a copy of
+            ``input_ids`` with ``-100`` at every unmasked position (the
+            ``ignore_index`` consumed by the in-model cross-entropy loss).
+        """
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
 
         rand = torch.rand(batch_size, seq_len, device=device, generator=generator)
 
@@ -159,9 +176,12 @@ class UniformMasker:
         if special_tokens_mask is not None:
             maskable = maskable & ~special_tokens_mask.bool()
 
-        mask_labels = (rand < self.mask_rate) & maskable
+        mask = (rand < self.mask_rate) & maskable
 
-        masked_ids = token_ids.clone()
-        masked_ids[mask_labels] = self.mask_token_id
+        masked_input_ids = input_ids.clone()
+        masked_input_ids[mask] = self.mask_token_id
 
-        return masked_ids, mask_labels
+        labels = input_ids.clone()
+        labels[~mask] = -100
+
+        return masked_input_ids, labels

@@ -297,9 +297,9 @@ Pattern: `ref: __init__.py:27-49`.
 
 ## Phase 6 — Masking (`masking/masking.py`)
 
-- [ ] Rename `apply_mask` parameter `token_ids` → `input_ids` in
+- [x] Rename `apply_mask` parameter `token_ids` → `input_ids` in
       `InformationWeightedMasker` and `UniformMasker`.
-- [ ] Change return contract to `(masked_input_ids, labels)` where
+- [x] Change return contract to `(masked_input_ids, labels)` where
       `labels = input_ids.clone(); labels[~mask] = -100`. Internals keep the
       Gumbel-top-k weighted sampling; the boolean mask is now expressed
       downstream as `labels != -100`.
