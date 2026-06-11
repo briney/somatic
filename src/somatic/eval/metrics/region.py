@@ -15,7 +15,7 @@ from ..regions import (
 )
 
 if TYPE_CHECKING:
-    from ...model.transformer import ModelOutput
+    from transformers.modeling_outputs import MaskedLMOutput
 
 
 class RegionAccuracyMetric(MetricBase):
@@ -25,7 +25,7 @@ class RegionAccuracyMetric(MetricBase):
     detailed analysis of model performance across CDRs and frameworks.
 
     Only counts positions where both:
-    - mask_labels is True (position was masked)
+    - the position was masked (labels != -100)
     - region_mask is True (position belongs to region)
 
     Parameters
@@ -86,23 +86,24 @@ class RegionAccuracyMetric(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate accuracy per region from a batch.
 
         Args:
-            outputs: Model outputs with "logits" key.
-            batch: Input batch with "token_ids", "cdr_mask", "chain_ids".
-            mask_labels: Binary mask indicating masked positions.
+            outputs: Model outputs with ``logits``.
+            batch: Input batch with "cdr_mask", "token_type_ids" (for region masks).
+            labels: MLM labels (original ids at masked positions, -100 elsewhere).
         """
         # Skip if no CDR mask available
         if batch.get("cdr_mask") is None:
             return
 
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
+        logits = outputs.logits
+        assert logits is not None
+        targets = labels
         predictions = logits.argmax(dim=-1)
 
         # Get region masks
@@ -118,7 +119,7 @@ class RegionAccuracyMetric(MetricBase):
         else:
             aggregated = {r.value: m for r, m in region_masks.items()}
 
-        mask = mask_labels.bool()
+        mask = labels != -100
         correct_mask = (predictions == targets) & mask
 
         for region_name, region_mask in aggregated.items():
@@ -227,17 +228,17 @@ class _RegionCrossEntropyMetric(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate loss per region from a batch."""
         if batch.get("cdr_mask") is None:
             return
 
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-        assert targets is not None
+        logits = outputs.logits
+        assert logits is not None
+        targets = labels
 
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)
@@ -257,7 +258,7 @@ class _RegionCrossEntropyMetric(MetricBase):
         else:
             aggregated = {r.value: m for r, m in region_masks.items()}
 
-        mask = mask_labels.bool()
+        mask = labels != -100
 
         for region_name, region_mask in aggregated.items():
             combined_mask = mask & region_mask

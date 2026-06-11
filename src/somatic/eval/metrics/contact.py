@@ -11,7 +11,7 @@ from ..base import MetricBase
 from ..registry import register_metric
 
 if TYPE_CHECKING:
-    from ...model.transformer import ModelOutput
+    from transformers.modeling_outputs import MaskedLMOutput
 
 
 def compute_distance_matrix(coords: Tensor) -> Tensor:
@@ -289,20 +289,20 @@ class PrecisionAtLMetric(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate precision from a batch.
 
         Args:
-            outputs: Model outputs with "attentions" key.
+            outputs: Model outputs with ``attentions``.
             batch: Input batch with "coords" and "attention_mask".
-            mask_labels: Binary mask (unused for this metric).
+            labels: MLM labels (unused for this metric).
         """
         coords = batch.get("coords")
         attention_mask = batch.get("attention_mask")
-        attentions = outputs.get("attentions")
+        attentions = outputs.attentions
 
         if coords is None or attentions is None or attention_mask is None:
             return

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from accelerate import Accelerator
     from torch.utils.data import DataLoader
 
-    from ..model import SomaticModel
+    from ..model import SomaticForMaskedLM
     from .cross_chain_config import CrossChainEvalConfig
 
 
@@ -40,7 +40,7 @@ def _slice_batch(batch: dict, start: int, end: int) -> dict:
 
 
 def _build_masks(
-    chain_ids: torch.Tensor,
+    token_type_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     special_tokens_mask: torch.Tensor,
     interface_n: int,
@@ -57,16 +57,16 @@ def _build_masks(
     """
     valid = attention_mask.bool() & ~special_tokens_mask.bool()  # (B, S)
 
-    chain_q = chain_ids.unsqueeze(2)  # (B, S, 1)
-    chain_k = chain_ids.unsqueeze(1)  # (B, 1, S)
+    chain_q = token_type_ids.unsqueeze(2)  # (B, S, 1)
+    chain_k = token_type_ids.unsqueeze(1)  # (B, 1, S)
     cross_pair = chain_q != chain_k  # (B, S, S)
 
     valid_key = attention_mask.bool().unsqueeze(1)  # (B, 1, S)
     cross_mask = cross_pair & valid_key  # (B, S, S)
     cross_mask_valid_q = cross_mask & valid.unsqueeze(-1)
 
-    heavy_pos = (chain_ids == 0) & valid  # (B, S)
-    light_pos = (chain_ids == 1) & valid
+    heavy_pos = (token_type_ids == 0) & valid  # (B, S)
+    light_pos = (token_type_ids == 1) & valid
 
     # First-N light: cumulative count along seq dim, accept rows where 1<=count<=N.
     light_cum = torch.cumsum(light_pos.long(), dim=1)
@@ -93,7 +93,7 @@ def _build_masks(
 
 
 def run_cross_chain_eval(
-    model: SomaticModel,
+    model: SomaticForMaskedLM,
     eval_loader: DataLoader,
     config: CrossChainEvalConfig,
     accelerator: Accelerator | None,
@@ -141,21 +141,21 @@ def run_cross_chain_eval(
                     k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
                 }
 
-            outer_B = batch["token_ids"].shape[0]
+            outer_B = batch["input_ids"].shape[0]
             for start in range(0, outer_B, config.chunk_size):
                 end = min(start + config.chunk_size, outer_B)
                 sub = _slice_batch(batch, start, end)
 
                 outputs = model(
-                    token_ids=sub["token_ids"],
-                    chain_ids=sub["chain_ids"],
+                    input_ids=sub["input_ids"],
+                    token_type_ids=sub["token_type_ids"],
                     attention_mask=sub["attention_mask"],
                     output_attentions=True,
                 )
-                attentions = outputs["attentions"]  # tuple of (b, H, S, S)
+                attentions = outputs.attentions  # tuple of (b, H, S, S)
 
                 masks = _build_masks(
-                    chain_ids=sub["chain_ids"],
+                    token_type_ids=sub["token_type_ids"],
                     attention_mask=sub["attention_mask"],
                     special_tokens_mask=sub["special_tokens_mask"],
                     interface_n=config.interface_n,

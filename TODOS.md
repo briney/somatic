@@ -346,16 +346,34 @@ Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 
 ## Phase 8 — Eval system (`eval/`, `training/metrics.py`)
 
-- [ ] All `model(...)` calls use `input_ids` / `token_type_ids` /
-      `attention_mask`; read `outputs.logits`, `outputs.last_hidden_state`, and
-      `outputs.hidden_states` (the per-layer tuple; final state is
-      `last_hidden_state`).
-- [ ] Refactor metric `update(outputs, batch, mask_labels)` to consume `labels`:
-      `mask = labels != -100`, `targets = labels`. Region metrics
-      (`RegionAccuracyMetric`, `RegionPerplexityMetric`, `RegionLossMetric`) still
-      read `cdr_mask` from the batch to bucket positions — pass `labels` alongside.
-- [ ] Update `eval/region_eval.py` and `eval/per_position.py` forward calls and
-      output-attribute access; thread `token_type_ids`.
+- [x] All `model(...)` calls use `input_ids` / `token_type_ids` /
+      `attention_mask`; read `outputs.logits` / `outputs.attentions` /
+      `outputs.hidden_states` (attribute access). Replaced the dead
+      `from ...model.transformer import ModelOutput` type import with
+      `transformers.modeling_outputs.MaskedLMOutput` across base.py + all metric
+      files. Added `assert logits is not None` where needed (stubs type
+      `MaskedLMOutput.logits` as Optional).
+- [x] Refactored every metric `update(outputs, batch, mask_labels)` to consume
+      `labels`: `mask = labels != -100`, `targets = labels`. Region metrics still
+      read `cdr_mask`/`token_type_ids` from the batch via `extract_region_masks`.
+- [x] Updated `eval/region_eval.py`, `eval/per_position.py`,
+      `eval/cross_chain_eval.py`, `eval/masking.py`, `eval/evaluator.py` forward
+      calls + output access; threaded `token_type_ids`. `EvalMasker` now returns
+      `(masked_input_ids, labels)`; dropped the dead diffusion `noise_schedule`
+      branch in the evaluator.
+- [x] Hidden-state metrics: `MaskedLMOutput.hidden_states` is the per-layer tuple
+      (no `last_hidden_state` on the MLM head), so probes read `hidden_states[-1]`.
+      Added a `needs_hidden_states` ClassVar (probes set it True) and wired the
+      evaluator to pass `output_hidden_states` when any metric needs it (mirrors
+      `needs_attentions`).
+- [x] Verified end-to-end: `Evaluator.evaluate` (core MLM metrics + probes via the
+      hidden-states path + standard region eval) and the full trainer→Evaluator
+      integration both run with the new API.
+- NOTE (Phase 10): `registry.build_metrics` still reads `cfg.model.n_layers` for
+  the coords-only `p_at_l` default (skipped when no coords) — rename to
+  `num_hidden_layers` when the YAMLs are renamed. `training/metrics.py` keeps its
+  boolean-mask interface (`compute_mlm_metrics(..., mask_labels=...)`); the trainer
+  feeds it `labels != -100`, so no change was needed there.
 
 ## Phase 9 — Encoding / inference & CLI (`encoding/encoder.py`, `cli.py`)
 

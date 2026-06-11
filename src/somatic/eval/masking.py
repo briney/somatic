@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 from ..masking import InformationWeightedMasker, UniformMasker
-from ..tokenizer import tokenizer
+from ..model.tokenization_somatic import tokenizer
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -105,7 +105,7 @@ class EvalMasker:
         ----------
         batch
             Batch dictionary with at least:
-            - token_ids: (batch, seq_len) token IDs
+            - input_ids: (batch, seq_len) token IDs
             - attention_mask: (batch, seq_len) attention mask
             - special_tokens_mask: (batch, seq_len) optional special tokens mask
             - cdr_mask: (batch, seq_len) optional CDR mask (for info-weighted)
@@ -116,17 +116,17 @@ class EvalMasker:
         Returns
         -------
         tuple[Tensor, Tensor]
-            - masked_ids: Token IDs with masked positions replaced
-            - mask_labels: Boolean mask indicating which positions were masked
+            - masked_input_ids: Token IDs with masked positions replaced
+            - labels: Original ids at masked positions, -100 elsewhere
         """
-        token_ids = batch["token_ids"]
+        input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         special_tokens_mask = batch.get("special_tokens_mask")
 
         # Apply masking based on masker type
         if self.masker_type == "uniform":
             return self._masker.apply_mask(
-                token_ids=token_ids,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
                 special_tokens_mask=special_tokens_mask,
                 generator=generator,
@@ -135,7 +135,7 @@ class EvalMasker:
             # Information-weighted masking
             assert isinstance(self._masker, InformationWeightedMasker)
             return self._masker.apply_mask(
-                token_ids=token_ids,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
                 cdr_mask=batch.get("cdr_mask"),
                 non_templated_mask=batch.get("non_templated_mask"),

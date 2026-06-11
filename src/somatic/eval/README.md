@@ -122,17 +122,18 @@ from somatic.eval import Metric
 
 class Metric(Protocol):
     # Class attributes
-    name: ClassVar[str]              # Unique identifier for logging
-    requires_coords: ClassVar[bool]  # True if metric needs 3D coordinates
-    needs_attentions: ClassVar[bool] # True if metric needs attention weights
+    name: ClassVar[str]                 # Unique identifier for logging
+    requires_coords: ClassVar[bool]     # True if metric needs 3D coordinates
+    needs_attentions: ClassVar[bool]    # True if metric needs attention weights
+    needs_hidden_states: ClassVar[bool] # True if metric needs hidden states
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
-        """Accumulate values from a batch."""
+        """Accumulate values from a batch (labels: ids at masked positions, -100 elsewhere)."""
         ...
 
     def compute(self) -> dict[str, float]:
@@ -179,9 +180,10 @@ from somatic.eval.registry import register_metric
 class MyMetric(MetricBase):
     """Description of what this metric measures."""
 
-    name: ClassVar[str] = "my_metric"       # Used in result keys
+    name: ClassVar[str] = "my_metric"        # Used in result keys
     requires_coords: ClassVar[bool] = False  # Set True if needs coords
     needs_attentions: ClassVar[bool] = False # Set True if needs attention
+    needs_hidden_states: ClassVar[bool] = False  # Set True if needs hidden states
 
     def __init__(self, threshold: float = 0.5, **kwargs) -> None:
         super().__init__()
@@ -192,14 +194,14 @@ class MyMetric(MetricBase):
 
     def update(
         self,
-        outputs: dict[str, Tensor | tuple[Tensor, ...]],
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate metric from batch."""
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-        mask = mask_labels.bool()
+        logits = outputs.logits
+        targets = labels
+        mask = labels != -100
 
         predictions = logits.argmax(dim=-1)
         correct = (predictions == targets) & mask
