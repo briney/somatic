@@ -1,0 +1,393 @@
+# Workplan: HuggingFace `transformers` Compatibility Refactor
+
+## Goal
+
+Make Somatic loadable through the standard `transformers` Auto classes with
+`from_pretrained(...)`, including remote loading via `trust_remote_code=True`:
+
+```python
+from transformers import AutoConfig, AutoModel, AutoModelForMaskedLM, AutoTokenizer
+model = AutoModelForMaskedLM.from_pretrained("path/or/hub")          # local install
+model = AutoModelForMaskedLM.from_pretrained(path, trust_remote_code=True)  # remote
+tok   = AutoTokenizer.from_pretrained(path)
+```
+
+This is a **clean break**: no backwards compatibility. Old `.pt` checkpoints
+(the untracked `checkpoints/` dir) will not load and are discarded. The legacy
+`from_pretrained` field-popping (`max_timesteps`, `use_timestep_embedding`,
+bool `hybrid_norm`) is removed entirely.
+
+The reference implementation is the sibling repo `../oplm` (a protein LM that
+already has this compatibility). Throughout this plan, "ref:" points at files in
+`/home/briney/git/oplm/src/oplm/`.
+
+### Locked design decisions
+
+1. **Config field names → HF canonical** (`hidden_size`, `num_hidden_layers`,
+   `num_attention_heads`, `intermediate_size`, `max_position_embeddings`, ...).
+   No `attribute_map` aliasing.
+2. **Chain identity → `token_type_ids`** (HF's standard segment slot). The
+   tokenizer emits it natively from paired input; the model forward accepts
+   `token_type_ids`; chain-aware attention reads it as chain identity. This is
+   a pure rename of the internal `chain_ids` concept — semantics unchanged.
+3. **Four model classes**: `SomaticModel` (base), `SomaticForMaskedLM`,
+   `SomaticForSequenceClassification`, `SomaticForTokenClassification`.
+4. **Loss in model, masking retained**: the model computes loss internally from
+   `labels` (`ignore_index=-100`). `InformationWeightedMasker` stays in the
+   trainer/evaluator but now emits HF-style `labels`.
+
+---
+
+## Reference: field rename map (current → HF canonical)
+
+Applied in `SomaticConfig`, all `configs/model/*.yaml`, `train.py` construction,
+and everywhere a config attribute is read.
+
+| Current (`SomaticConfig` dataclass) | New (HF canonical)         |
+|-------------------------------------|----------------------------|
+| `d_model`                           | `hidden_size`              |
+| `n_layers`                          | `num_hidden_layers`        |
+| `n_heads`                           | `num_attention_heads`      |
+| `d_ffn`                             | `intermediate_size`        |
+| `max_seq_len`                       | `max_position_embeddings`  |
+| `dropout` + `embedding_dropout`     | `hidden_dropout`           |
+| `attention_dropout`                 | `attention_dropout` (kept) |
+| `layer_norm_eps`                    | `norm_eps`                 |
+| `padding_idx`                       | use `pad_token_id`         |
+
+Kept Somatic-specific fields (names unchanged): `use_chain_aware_attention`,
+`chain_aware_projection_mode`, `rope_fraction`, `norm_type`, `pre_norm`,
+`post_norm`, `qk_norm`, `hybrid_norm`, `ffn_multiplier`, `head_dim`,
+`gradient_checkpointing`, `gradient_checkpointing_mode`.
+
+New fields to add: `initializer_range` (default 0.02), special-token ids
+(`pad_token_id=1, bos_token_id=0, eos_token_id=2, unk_token_id=3,
+mask_token_id=31`), and classification-head fields (`num_labels`,
+`classifier_dropout`, `classifier_pool`, `pre_head_norm`).
+
+## Reference: batch / forward key rename map
+
+| Current key/arg | New key/arg      |
+|-----------------|------------------|
+| `token_ids`     | `input_ids`      |
+| `chain_ids`     | `token_type_ids` |
+| (loss external) | `labels` (in-model loss, `-100` ignore) |
+
+Unchanged batch keys: `attention_mask`, `special_tokens_mask`, `cdr_mask`,
+`non_templated_mask`, `coords`.
+
+## Reference: target package layout
+
+```
+src/somatic/
+├── __init__.py                      # EDIT: Auto* registration + register_for_auto_class
+├── model/
+│   ├── __init__.py                  # EDIT: export config + 4 model classes + tokenizer
+│   ├── configuration_somatic.py     # NEW (SomaticConfig moves out of transformer.py)
+│   ├── modeling_somatic.py          # NEW (model classes move out of transformer.py)
+│   ├── tokenization_somatic.py      # NEW (moved from src/somatic/tokenizer.py)
+│   ├── attention.py                 # EDIT: rename chain_ids -> token_type_ids
+│   ├── layers.py                    # EDIT: rename chain_ids -> token_type_ids
+│   ├── ffn.py  normalization.py  rope.py  embeddings.py   # KEPT as-is (helpers)
+│   └── transformer.py               # REMOVE after contents migrated
+```
+
+**`trust_remote_code` bundling rule (critical):** HF copies only the *direct*
+relative imports (depth-1) of the main modeling file. So `modeling_somatic.py`
+must directly `from .X import ...` every helper it transitively needs
+(`attention`, `ffn`, `normalization`, `rope`, `embeddings`, `layers`,
+`configuration_somatic`) and reference the otherwise-unused names in a
+module-level `_REMOTE_CODE_DEPS` tuple. Pattern: `ref: model/modeling_oplm.py:24-49`.
+
+---
+
+## Phase 0 — Setup & branch
+
+- [ ] Create a feature branch: `git checkout -b feature/hf-compatibility`.
+- [ ] Confirm `transformers`, `tokenizers`, `safetensors` are declared in
+      `pyproject.toml` dependencies; add/loosen version ranges if missing.
+- [ ] Note: `src/somatic/tokenizer.py` is currently a `PreTrainedTokenizerFast`
+      already — good starting point. `src/somatic/model/transformer.py` holds
+      BOTH `SomaticConfig` (dataclass) and `SomaticModel` (`nn.Module`); these
+      get split across the two new files.
+
+## Phase 1 — Configuration (`model/configuration_somatic.py`)
+
+Pattern: `ref: model/configuration_oplm.py`.
+
+- [ ] Create `src/somatic/model/configuration_somatic.py` with
+      `class SomaticConfig(PretrainedConfig)` and `model_type = "somatic"`.
+- [ ] Keyword-only `__init__(self, *, ...)` accepting all fields (renamed per the
+      map above), special-token ids, `initializer_range`, and classification
+      fields. End with:
+      ```python
+      self._resolve_derived_fields()
+      self._validate()
+      kwargs.setdefault("num_labels", int(num_labels))  # num_labels is a property; forward via kwargs
+      super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id,
+                       eos_token_id=eos_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs)
+      ```
+- [ ] `_resolve_derived_fields()`: `head_dim = hidden_size // num_attention_heads`
+      when None; `intermediate_size` from `ffn_multiplier` (default `8/3`)
+      rounded up to a multiple of 64 — port the exact rounding from current
+      `transformer.py`'s `d_ffn` logic.
+- [ ] `_validate()`: port all current `SomaticConfig.__post_init__` assertions
+      (`hidden_size % num_attention_heads == 0`, `head_dim * heads == hidden_size`,
+      `0 <= rope_fraction <= 1`, enum membership for `norm_type`, `hybrid_norm`,
+      `qk_norm`, `gradient_checkpointing_mode`, `chain_aware_projection_mode`).
+- [ ] Do NOT assign `num_labels` as a direct attribute (it's a `PretrainedConfig`
+      property backed by `id2label`/`label2id`).
+- [ ] Delete the dataclass `SomaticConfig` from `transformer.py`.
+
+## Phase 2 — Modeling (`model/modeling_somatic.py`)
+
+Pattern: `ref: model/modeling_oplm.py`. Keep the math identical to the current
+implementation; this phase is repackaging + renaming + HF interfaces.
+
+### 2a. Thread `token_type_ids` through the stack (internal rename)
+- [ ] In `model/attention.py`: rename the `chain_ids` parameter to
+      `token_type_ids` in `ChainAwareAttention.forward`,
+      `SharedQKVChainAwareAttention.forward`, `BaseAttention`, and
+      `MultiHeadAttention.forward` (the last keeps accepting + ignoring it).
+- [ ] In `model/layers.py`: rename `chain_ids` → `token_type_ids` in
+      `TransformerBlock.forward` and `TransformerEncoder.forward` and all
+      internal passes to attention. Keep `set_gradient_checkpointing` as-is.
+
+### 2b. Base classes
+- [ ] `class SomaticPreTrainedModel(PreTrainedModel)`:
+      `config_class = SomaticConfig`, `base_model_prefix = "somatic"`,
+      `main_input_name = "input_ids"`, `supports_gradient_checkpointing = True`,
+      `_no_split_modules = ["TransformerBlock"]`, `_supports_sdpa = True`.
+- [ ] Port `_init_weights(self, module)` from current `transformer.py`, using
+      `self.config.initializer_range`.
+- [ ] Add `_set_gradient_checkpointing(value, mode=None)`,
+      `gradient_checkpointing_enable(gradient_checkpointing_kwargs=None)`,
+      `gradient_checkpointing_disable()` that propagate to
+      `TransformerEncoder.set_gradient_checkpointing` (ref: `modeling_oplm.py:119-148`).
+
+### 2c. `SomaticModel` (base encoder → `BaseModelOutput`)
+- [ ] `__init__`: build `SomaticEmbedding` + `TransformerEncoder` (+ final norm
+      already inside the encoder). Call `self.post_init()`.
+- [ ] `get_input_embeddings` / `set_input_embeddings` pointing at
+      `embeddings.token_embedding.embedding`.
+- [ ] `forward(input_ids=None, attention_mask=None, token_type_ids=None,
+      inputs_embeds=None, output_attentions=None, output_hidden_states=None,
+      return_dict=None)`:
+      - default `token_type_ids` to zeros (single chain) when None;
+      - resolve `output_*`/`return_dict` from config when None;
+      - return `BaseModelOutput(last_hidden_state=..., hidden_states=..., attentions=...)`.
+
+### 2d. `SomaticForMaskedLM` (→ `MaskedLMOutput`)
+- [ ] `self.somatic = SomaticModel(config)`; keep Somatic's existing **bias-free
+      tied Linear** `lm_head` (do NOT adopt oplm's dense+act+norm head — preserve
+      the current architecture).
+- [ ] `_tied_weights_keys = {"lm_head.weight": "somatic.embeddings.token_embedding.embedding.weight"}`;
+      rely on `config.tie_word_embeddings=True` + `post_init()` to tie.
+- [ ] `forward(..., token_type_ids=None, labels=None, ...)`: run base model,
+      `logits = self.lm_head(last_hidden_state).float()`; if `labels is not None`,
+      `loss = F.cross_entropy(logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100)`;
+      return `MaskedLMOutput(loss=loss, logits=logits, hidden_states=..., attentions=...)`.
+- [ ] Add `get_output_embeddings` / `set_output_embeddings` (the lm_head).
+
+### 2e. Classification heads
+- [ ] `SomaticForSequenceClassification` (→ `SequenceClassifierOutput`) and
+      `SomaticForTokenClassification` (→ `TokenClassifierOutput`): port directly
+      from `ref: modeling_oplm.py:394-562`, threading `token_type_ids` into the
+      inner `SomaticModel`. Use `config.classifier_pool` / `classifier_dropout` /
+      `pre_head_norm`; seq-classification uses HF `problem_type` loss inference.
+      (Add `mean_pool`/`cls_pool` helpers or reuse the existing pooling utilities
+      from `encoding/`.)
+
+### 2f. Remote-code bundling
+- [ ] In `modeling_somatic.py`, directly import all helper modules and add:
+      ```python
+      _REMOTE_CODE_DEPS = (ChainAwareAttention, FusedSwiGLUFFN, RotaryPositionEmbedding, ...)
+      ```
+- [ ] Remove the now-empty `model/transformer.py` (or reduce to re-exports if
+      anything still imports it, then delete those imports).
+
+## Phase 3 — Tokenizer (`model/tokenization_somatic.py`)
+
+Pattern: `ref: model/tokenization_oplm.py`. Move `src/somatic/tokenizer.py` here.
+
+- [ ] Rename class `Tokenizer` → `SomaticTokenizerFast`. Keep `DEFAULT_VOCAB`,
+      `AA_START_IDX`, `AA_END_IDX`, and a module-level singleton
+      `tokenizer = SomaticTokenizerFast()`.
+- [ ] Set `vocab_files_names = {"tokenizer_file": "tokenizer.json"}` and
+      `model_input_names = ["input_ids", "token_type_ids", "attention_mask"]`.
+- [ ] **Emit `token_type_ids` natively** via `TemplateProcessing` so segment ids
+      reproduce the current chain layout (cls=0, heavy=0, light=1, eos=1, single
+      trailing eos):
+      ```python
+      single = "<cls>:0 $A:0 <eos>:0"
+      pair   = "<cls>:0 $A:0 $B:1 <eos>:1"
+      ```
+      so `tokenizer(heavy, light, return_token_type_ids=True)` yields the chain
+      segmentation for free.
+- [ ] Replace `encode_paired` with a thin wrapper over `self(heavy, light, ...)`
+      returning `input_ids` / `token_type_ids` / `attention_mask`. Drop the
+      `add_chain_separator` variant (plain MHA ignores chain identity).
+- [ ] Verify `tokenizer.save_pretrained(dir)` writes `tokenizer.json` +
+      `tokenizer_config.json`.
+
+## Phase 4 — Package registration
+
+Pattern: `ref: __init__.py:27-49`.
+
+- [ ] `src/somatic/model/__init__.py`: export `SomaticConfig`, `SomaticModel`,
+      `SomaticForMaskedLM`, `SomaticForSequenceClassification`,
+      `SomaticForTokenClassification`, `SomaticTokenizerFast`.
+- [ ] `src/somatic/__init__.py`: register and flag for auto-class file copy:
+      ```python
+      AutoConfig.register("somatic", SomaticConfig, exist_ok=True)
+      AutoModel.register(SomaticConfig, SomaticModel, exist_ok=True)
+      AutoModelForMaskedLM.register(SomaticConfig, SomaticForMaskedLM, exist_ok=True)
+      AutoModelForSequenceClassification.register(SomaticConfig, SomaticForSequenceClassification, exist_ok=True)
+      AutoModelForTokenClassification.register(SomaticConfig, SomaticForTokenClassification, exist_ok=True)
+      AutoTokenizer.register(SomaticConfig, fast_tokenizer_class=SomaticTokenizerFast, exist_ok=True)
+
+      SomaticConfig.register_for_auto_class("AutoConfig")
+      SomaticModel.register_for_auto_class("AutoModel")
+      SomaticForMaskedLM.register_for_auto_class("AutoModelForMaskedLM")
+      SomaticForSequenceClassification.register_for_auto_class("AutoModelForSequenceClassification")
+      SomaticForTokenClassification.register_for_auto_class("AutoModelForTokenClassification")
+      SomaticTokenizerFast.register_for_auto_class("AutoTokenizer")
+      ```
+- [ ] Guard against import cycles (registration imports model classes, which
+      import config/tokenizer).
+
+## Phase 5 — Collator (`data/collator.py`)
+
+- [ ] Update the singleton import to `from ..model.tokenization_somatic import tokenizer`.
+- [ ] Rename output dict keys: `token_ids` → `input_ids`, `chain_ids` →
+      `token_type_ids` (keep the same 0/1 construction). Keep `attention_mask`,
+      `special_tokens_mask`, `cdr_mask`, `non_templated_mask`, `coords`.
+- [ ] Update the internal `EncodedPair` TypedDict keys accordingly.
+- [ ] Keep the manual token assembly (it aligns coords/cdr/nt masks with the
+      token layout — simpler than re-deriving offsets from the tokenizer).
+
+## Phase 6 — Masking (`masking/masking.py`)
+
+- [ ] Rename `apply_mask` parameter `token_ids` → `input_ids` in
+      `InformationWeightedMasker` and `UniformMasker`.
+- [ ] Change return contract to `(masked_input_ids, labels)` where
+      `labels = input_ids.clone(); labels[~mask] = -100`. Internals keep the
+      Gumbel-top-k weighted sampling; the boolean mask is now expressed
+      downstream as `labels != -100`.
+
+## Phase 7 — Trainer & checkpoints
+
+Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
+`train.py`, `cli.py`.
+
+- [ ] `train.py`: build `SomaticForMaskedLM(SomaticConfig(**hf_named_fields))`;
+      map `cfg.model.*` Hydra keys to the new HF field names.
+- [ ] Training step: get `labels` from the masker; call
+      `model(input_ids=masked_input_ids, token_type_ids=batch["token_type_ids"],
+      attention_mask=batch["attention_mask"], labels=labels)` and use
+      `outputs.loss`. Remove the external `compute_masked_cross_entropy` loss call
+      (delete the helper if no metric still needs it).
+- [ ] **Checkpoint format (clean break)** — replace the combined-`.pt` /
+      `asdict(config)` scheme in `checkpoint.py`:
+      - Publishable/best/final: `model.save_pretrained(dir)` (→ `config.json`
+        with `auto_map` + `model.safetensors`) and `tokenizer.save_pretrained(dir)`
+        (→ `tokenizer.json`, `tokenizer_config.json` with `auto_map`).
+      - Resume state: sibling `training_state.pt` =
+        `{step, epoch, optimizer_state_dict, scheduler_state_dict, rng, metrics}`.
+      - Resume path: `AutoModelForMaskedLM.from_pretrained(dir)` then load
+        `training_state.pt`.
+      - Drop the legacy field-pop logic (`max_timesteps`, `use_timestep_embedding`,
+        bool `hybrid_norm`).
+- [ ] Preserve the existing constraint: the scheduler is NOT wrapped by
+      `accelerator.prepare()` (avoids the 8x-step DDP bug).
+
+## Phase 8 — Eval system (`eval/`, `training/metrics.py`)
+
+- [ ] All `model(...)` calls use `input_ids` / `token_type_ids` /
+      `attention_mask`; read `outputs.logits`, `outputs.last_hidden_state`, and
+      `outputs.hidden_states` (the per-layer tuple; final state is
+      `last_hidden_state`).
+- [ ] Refactor metric `update(outputs, batch, mask_labels)` to consume `labels`:
+      `mask = labels != -100`, `targets = labels`. Region metrics
+      (`RegionAccuracyMetric`, `RegionPerplexityMetric`, `RegionLossMetric`) still
+      read `cdr_mask` from the batch to bucket positions — pass `labels` alongside.
+- [ ] Update `eval/region_eval.py` and `eval/per_position.py` forward calls and
+      output-attribute access; thread `token_type_ids`.
+
+## Phase 9 — Encoding / inference & CLI (`encoding/encoder.py`, `cli.py`)
+
+- [ ] Use base `SomaticModel` for embeddings: replace `outputs["hidden_states"]`
+      with `outputs.last_hidden_state` in `encode` / `encode_batch`.
+- [ ] Use `SomaticForMaskedLM` for `get_logits` / `predict` (`outputs.logits`).
+- [ ] Replace `model(token_ids=, chain_ids=, attention_mask=)` with
+      `model(input_ids=, token_type_ids=, attention_mask=)` everywhere in the
+      encoder.
+- [ ] `SomaticEncoder.from_pretrained` loads via the HF dir format
+      (`SomaticModel.from_pretrained` / `AutoModel`). Move the standalone
+      `predict_masked` helper onto `SomaticForMaskedLM` or the encoder.
+- [ ] `cli.py encode`: confirm it still works end-to-end through the updated encoder.
+
+## Phase 10 — Hydra configs (`configs/model/*.yaml`)
+
+- [ ] Rename keys to HF canonical names in `small.yaml`, `base.yaml`,
+      `large.yaml`, `xlarge.yaml` (`hidden_size`, `num_hidden_layers`,
+      `num_attention_heads`, `intermediate_size`, `max_position_embeddings`,
+      `hidden_dropout`, `attention_dropout`, `norm_eps`, ...).
+- [ ] Hydra still orchestrates training (data/train/log/eval blocks unchanged);
+      only the `model:` block field names change to feed `SomaticConfig`.
+
+## Phase 11 — Tests (`tests/`)
+
+- [ ] `conftest.py`: update fixtures —
+      `small_config = SomaticConfig(hidden_size=64, num_hidden_layers=2,
+      num_attention_heads=2, max_position_embeddings=64, hidden_dropout=0.0)`;
+      `small_model = SomaticForMaskedLM(small_config)`; add a base-`SomaticModel`
+      fixture. `sample_batch` keys → `input_ids` / `token_type_ids`.
+- [ ] Update every existing test: forward calls (`input_ids`/`token_type_ids`),
+      output access (`outputs.logits` / `outputs.last_hidden_state`), collator key
+      assertions, masker `(masked_input_ids, labels)` return, region/per-position
+      eval.
+- [ ] Add HF-compat tests (mirror `ref: tests/model/test_push_to_hub.py`,
+      `tests/test_e2e_lifecycle.py`):
+  - [ ] **save→reload**: tiny `SomaticForMaskedLM` → `save_pretrained(tmp)` →
+        `SomaticForMaskedLM.from_pretrained(tmp)`; assert logits match.
+  - [ ] **custom-code files copied**: after `save_pretrained` with
+        `register_for_auto_class`, assert `modeling_somatic.py`,
+        `configuration_somatic.py`, `tokenization_somatic.py`, and helper files
+        land beside `config.json`, and `auto_map` entries exist in `config.json`.
+  - [ ] **remote reload in subprocess**: fresh interpreter (no `import somatic`),
+        `AutoModelForMaskedLM.from_pretrained(tmp, trust_remote_code=True)` and
+        `AutoTokenizer.from_pretrained(tmp, trust_remote_code=True)`; assert class
+        name and that `tok(heavy, light)` yields expected `input_ids` +
+        `token_type_ids`.
+  - [ ] Keep the "tiny model trains a few steps + one eval" end-to-end test
+        (per global CLAUDE.md), updated to the new API.
+
+## Phase 12 — Verification
+
+- [ ] `ruff format` and `ruff check` clean.
+- [ ] `ty` (type checker) clean.
+- [ ] `pytest` green (unit + new HF-compat tests).
+- [ ] Manual round-trip: build tiny `SomaticForMaskedLM`, `save_pretrained(tmp)`,
+      `tokenizer.save_pretrained(tmp)`, reload via
+      `AutoModelForMaskedLM.from_pretrained(tmp)` + `AutoTokenizer.from_pretrained(tmp)`;
+      assert logits match pre-save and `tokenizer("EVQ...","DIQ...")` gives the
+      expected `input_ids` + `token_type_ids` (cls/heavy=0, light/eos=1).
+- [ ] `trust_remote_code` subprocess reload succeeds for both model and tokenizer
+      with no `import somatic`.
+- [ ] Train smoke test:
+      `somatic train data.train=<tiny.csv> model=small train.batch_size=4`
+      runs a few steps + one eval without shape errors; the resulting checkpoint
+      dir loads via `AutoModelForMaskedLM.from_pretrained`.
+- [ ] Encode smoke test:
+      `somatic encode -c <dir> -i <seqs.csv> -o emb.pt --pooling mean`
+      produces embeddings using `last_hidden_state`.
+
+---
+
+## Out of scope / consequences
+
+- No backwards compatibility: old `.pt` checkpoints won't load and are discarded.
+- Attention / RoPE / FFN / norm math is unchanged — repackaging + renaming + HF
+  interfaces only. The single renamed internal concept is
+  `chain_ids` → `token_type_ids`.
