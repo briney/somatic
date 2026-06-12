@@ -124,7 +124,7 @@ class TestBuildMasks:
         m = _build_masks(token_type_ids, attention_mask, special, interface_n=2)
         # Heavy non-special positions are 1..4. Last-2 = positions 3, 4.
         # Light non-special positions are 5..8. First-2 = positions 5, 6.
-        last_n_heavy = (m["interface_pair"].sum(dim=2) > 0)[0]
+        _last_n_heavy = (m["interface_pair"].sum(dim=2) > 0)[0]
         # Where interface_pair has any True in S_k dim AND that row is heavy.
         # Easier: rebuild the inputs and check explicitly.
         valid = m["valid"][0]
@@ -346,7 +346,7 @@ class TestInterfaceFrac:
         # uniformly across the heavy chain (all of it, including non-corner)
         # so half their mass falls outside the interface window.
         attn = torch.zeros(B, H, S, S)
-        last_n_heavy = [3, 4]
+        _last_n_heavy = [3, 4]
         first_n_light = [5, 6]
         light_queries = [5, 6, 7, 8]
         heavy_chain_keys = [1, 2, 3, 4]

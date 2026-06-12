@@ -469,23 +469,44 @@ Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 
 ## Phase 12 — Verification
 
-- [ ] `ruff format` and `ruff check` clean.
-- [ ] `ty` (type checker) clean.
-- [ ] `pytest` green (unit + new HF-compat tests).
-- [ ] Manual round-trip: build tiny `SomaticForMaskedLM`, `save_pretrained(tmp)`,
-      `tokenizer.save_pretrained(tmp)`, reload via
-      `AutoModelForMaskedLM.from_pretrained(tmp)` + `AutoTokenizer.from_pretrained(tmp)`;
-      assert logits match pre-save and `tokenizer("EVQ...","DIQ...")` gives the
-      expected `input_ids` + `token_type_ids` (cls/heavy=0, light/eos=1).
-- [ ] `trust_remote_code` subprocess reload succeeds for both model and tokenizer
-      with no `import somatic`.
-- [ ] Train smoke test:
-      `somatic train data.train=<tiny.csv> model=small train.batch_size=4`
-      runs a few steps + one eval without shape errors; the resulting checkpoint
-      dir loads via `AutoModelForMaskedLM.from_pretrained`.
-- [ ] Encode smoke test:
-      `somatic encode -c <dir> -i <seqs.csv> -o emb.pt --pooling mean`
-      produces embeddings using `last_hidden_state`.
+- [x] `ruff format` and `ruff check` clean (whole repo, 98 files). Fixed the
+      remaining test lint by hand (B007 unused loop vars → `_`-prefixed, B905
+      `zip(..., strict=True)`, F841 unused vars) and migrated the unmigrated
+      `scripts/cross_chain_attention.py` to the HF API (it still read
+      `cfg.d_model`/`batch["chain_ids"]`/`model(token_ids=...)` and the dropped
+      `from_pretrained(map_location=)` kwarg — would have crashed at runtime).
+- [x] `ty` (type checker) clean. CI scopes ty to `ty check src/` (see
+      `.github/workflows/ci.yaml`), and `src/` passes ("All checks passed!").
+      `tests/`+`scripts/` carry pre-existing structural ty noise (168 diagnostics
+      already at the feature-branch merge-base: `**dict`-unpacking into the
+      heterogeneous `SomaticConfig.__init__`, `Tensor | None` / `str | list[str]`
+      narrowing) that CI does not gate on and the migration did not introduce.
+- [x] `pytest` green: **575 passed** in ~46s (570 migrated + 5 HF-compat). The 23
+      warnings are pre-existing (LR-scheduler step-order in `test_optimizer`).
+- [x] Manual round-trip verified: tiny `SomaticForMaskedLM` →
+      `save_pretrained`/`tokenizer.save_pretrained` → `AutoModelForMaskedLM` +
+      `AutoTokenizer.from_pretrained` reload. logits maxdiff **0.0**, `lm_head`
+      tie intact (shared `data_ptr`), `tokenizer("EVQ…","DIQ…")` gives 26 leading
+      `token_type_ids==0` (cls + 25-aa heavy) then `==1` (light + eos). All
+      custom-code `.py` files + `config.json`/`model.safetensors`/tokenizer land
+      in the dir.
+- [x] `trust_remote_code` subprocess reload: fresh interpreter (asserted
+      `somatic` absent from `sys.modules` before and after), `AutoModelForMaskedLM`
+      + `AutoTokenizer.from_pretrained(dir, trust_remote_code=True)` →
+      `SomaticForMaskedLM` from the `transformers_modules.*` dynamic namespace,
+      correct logits + `token_type_ids`.
+- [x] Train smoke test:
+      `somatic train --no-wandb data.train=<tiny.csv> data.eval=<tiny.csv>
+      model=small train.batch_size=4 train.max_steps=6 train.eval_steps=3
+      train.checkpoint_steps=3` ran 6 steps + eval + region eval with no shape
+      errors (24M `small` model); checkpoint dir (`config.json` + safetensors +
+      tokenizer + bundled `.py`) loads via `AutoModelForMaskedLM.from_pretrained`
+      (local-install path, `import somatic` → registered class, no
+      `trust_remote_code` needed).
+- [x] Encode smoke test:
+      `somatic encode -c <ckpt_dir> -i tests/e2e/fixtures/toy_data.csv -o emb.pt
+      --pooling mean` produced a `(5, 256)` float32 tensor via the base encoder's
+      `last_hidden_state` path.
 
 ---
 

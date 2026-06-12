@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import matplotlib
@@ -36,7 +35,6 @@ from somatic.data.collator import AntibodyCollator
 from somatic.data.dataset import AntibodyDataset
 from somatic.model import SomaticModel
 
-
 REGIONS_PER_CHAIN = ["FWR1", "CDR1", "FWR2", "CDR2", "FWR3", "CDR3", "FWR4"]
 REGION_LABELS = (
     ["CLS"]
@@ -47,7 +45,7 @@ REGION_LABELS = (
 
 
 def assign_regions(
-    cdr_mask: torch.Tensor, chain_ids: torch.Tensor, special_tokens_mask: torch.Tensor
+    cdr_mask: torch.Tensor, token_type_ids: torch.Tensor, special_tokens_mask: torch.Tensor
 ) -> torch.Tensor:
     """Assign a region id per token.
 
@@ -65,7 +63,7 @@ def assign_regions(
     out = torch.full((B, S), -1, dtype=torch.long)
 
     for b in range(B):
-        chain = chain_ids[b].tolist()
+        chain = token_type_ids[b].tolist()
         cdr = cdr_mask[b].tolist()
         special = special_tokens_mask[b].tolist()
 
@@ -95,7 +93,7 @@ def assign_regions(
 
 def compute_metrics(
     attentions: list[torch.Tensor],
-    chain_ids: torch.Tensor,
+    token_type_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     region_ids: torch.Tensor,
     special_tokens_mask: torch.Tensor,
@@ -107,7 +105,7 @@ def compute_metrics(
     ----------
     attentions
         List of (B, H, S, S) tensors, one per layer.
-    chain_ids
+    token_type_ids
         (B, S) chain identity (0 = heavy/CLS, 1 = light/EOS).
     attention_mask
         (B, S) 1 = valid token, 0 = padding.
@@ -121,9 +119,8 @@ def compute_metrics(
     target_S = max_seq_len if max_seq_len is not None else S
 
     # build masks once
-    attn_mask_b1s = attention_mask.unsqueeze(1)  # (B,1,S)
-    valid_query = (attention_mask.bool() & ~special_tokens_mask)  # (B, S)
-    cross_pair_mask = (chain_ids.unsqueeze(2) != chain_ids.unsqueeze(1))  # (B, S_q, S_k)
+    valid_query = attention_mask.bool() & ~special_tokens_mask  # (B, S)
+    cross_pair_mask = token_type_ids.unsqueeze(2) != token_type_ids.unsqueeze(1)  # (B, S_q, S_k)
     valid_key = attention_mask.bool().unsqueeze(1)  # (B,1,S)
     cross_mask = cross_pair_mask & valid_key  # (B,S_q,S_k); valid keys only
 
@@ -178,13 +175,13 @@ def compute_metrics(
         pos_cross_sum[L, :S] += cpq_b_s.sum(dim=0).cpu().numpy()
         pos_count[L, :S] += valid_q.sum(dim=0).cpu().numpy()
 
-        if L == n_layers - 1:
+        if n_layers - 1 == L:
             # Heatmap (head-mean, batch-mean conditioned on validity at both ends).
             attn_hm = attn.mean(dim=1)  # (B, S, S)
             mask_qk = valid_query.unsqueeze(2).float() * valid_key.float()  # (B,S,S)
             heatmap_last[:S, :S] += (
-                attn_hm.to(torch.float64) * mask_qk.to(torch.float64)
-            ).sum(dim=0).cpu()
+                (attn_hm.to(torch.float64) * mask_qk.to(torch.float64)).sum(dim=0).cpu()
+            )
             heatmap_count[:S, :S] += mask_qk.to(torch.float64).sum(dim=0).cpu()
 
     # Normalize
@@ -295,7 +292,7 @@ def find_chain_boundary(pos_count: np.ndarray) -> tuple[int, int]:
     relying on the cdr_mask coverage (which only fires for amino-acid tokens).
     This is approximate and is only used to set a x-zoom for plotting.
     """
-    valid = (pos_count.sum(axis=0) > 0)
+    valid = pos_count.sum(axis=0) > 0
     nonzero = np.where(valid)[0]
     if len(nonzero) == 0:
         return 0, 0
@@ -361,15 +358,19 @@ def run_variant(
     print(f"\n=== {name} ===")
     print(f"  loading: {checkpoint}")
 
-    model = SomaticModel.from_pretrained(str(checkpoint), map_location=device)
+    model = SomaticModel.from_pretrained(str(checkpoint))
     model.eval()
     model.to(device)
     cfg = model.config
-    print(f"  config: d_model={cfg.d_model} layers={cfg.n_layers} heads={cfg.n_heads} mode={cfg.chain_aware_projection_mode} chain_aware={cfg.use_chain_aware_attention}")
+    print(
+        f"  config: hidden_size={cfg.hidden_size} layers={cfg.num_hidden_layers} "
+        f"heads={cfg.num_attention_heads} mode={cfg.chain_aware_projection_mode} "
+        f"chain_aware={cfg.use_chain_aware_attention}"
+    )
 
     dataset = AntibodyDataset(
         data_path=str(eval_path),
-        max_length=cfg.max_seq_len,
+        max_length=cfg.max_position_embeddings,
         heavy_col="sequence_aa:0",
         light_col="sequence_aa:1",
         heavy_cdr_col="cdr_mask_aa:0",
@@ -381,7 +382,7 @@ def run_variant(
     if n_sequences < len(dataset):
         dataset.df = dataset.df.iloc[:n_sequences].reset_index(drop=True)
 
-    collator = AntibodyCollator(max_length=cfg.max_seq_len, pad_to_max=False)
+    collator = AntibodyCollator(max_length=cfg.max_position_embeddings, pad_to_max=False)
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, collate_fn=collator, num_workers=2
     )
@@ -391,38 +392,41 @@ def run_variant(
         for batch in loader:
             batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
             outputs = model(
-                token_ids=batch["token_ids"],
-                chain_ids=batch["chain_ids"],
+                input_ids=batch["input_ids"],
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
                 output_attentions=True,
             )
-            attentions = outputs["attentions"]
+            attentions = outputs.attentions
             region_ids = assign_regions(
                 cdr_mask=batch["cdr_mask"].cpu(),
-                chain_ids=batch["chain_ids"].cpu(),
+                token_type_ids=batch["token_type_ids"].cpu(),
                 special_tokens_mask=batch["special_tokens_mask"].cpu(),
             ).to(device)
             m = compute_metrics(
                 attentions=attentions,
-                chain_ids=batch["chain_ids"],
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
                 region_ids=region_ids,
                 special_tokens_mask=batch["special_tokens_mask"],
-                max_seq_len=cfg.max_seq_len,
+                max_seq_len=cfg.max_position_embeddings,
             )
             metrics_per_batch.append(m)
 
     agg = aggregate(metrics_per_batch)
-    print(f"  layers cross-chain mean: {agg['layer_cross'].mean():.4f}  (range {agg['layer_cross'].min():.4f} – {agg['layer_cross'].max():.4f})")
+    print(
+        f"  layers cross-chain mean: {agg['layer_cross'].mean():.4f}  "
+        f"(range {agg['layer_cross'].min():.4f} – {agg['layer_cross'].max():.4f})"
+    )
 
     # save JSON
     out = {
         "name": name,
         "config": {
-            "d_model": cfg.d_model,
-            "n_layers": cfg.n_layers,
-            "n_heads": cfg.n_heads,
-            "max_seq_len": cfg.max_seq_len,
+            "hidden_size": cfg.hidden_size,
+            "num_hidden_layers": cfg.num_hidden_layers,
+            "num_attention_heads": cfg.num_attention_heads,
+            "max_position_embeddings": cfg.max_position_embeddings,
             "use_chain_aware_attention": cfg.use_chain_aware_attention,
             "chain_aware_projection_mode": cfg.chain_aware_projection_mode,
         },

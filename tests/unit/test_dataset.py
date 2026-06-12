@@ -1,20 +1,19 @@
 """Tests for dataset classes."""
 
-import pytest
 import pandas as pd
+import pytest
 import torch
 
 from somatic.data.dataset import (
+    SEQUENCE_EXTENSIONS,
+    STRUCTURE_EXTENSIONS,
     AntibodyDataset,
     MultiDataset,
+    StructureData,
     StructureDataset,
     detect_dataset_format,
     parse_structure,
-    StructureData,
-    STRUCTURE_EXTENSIONS,
-    SEQUENCE_EXTENSIONS,
 )
-
 
 # Minimal PDB file content for testing
 MINIMAL_PDB_CONTENT = """\
@@ -357,9 +356,7 @@ class TestStructureDataset:
             StructureDataset(nested_structure_folder, max_length=100, recursive=False)
 
         # With recursive, should find 2 files
-        dataset = StructureDataset(
-            nested_structure_folder, max_length=100, recursive=True
-        )
+        dataset = StructureDataset(nested_structure_folder, max_length=100, recursive=True)
         assert len(dataset) == 2
 
     def test_not_a_directory_raises(self, tmp_path):

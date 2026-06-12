@@ -215,7 +215,7 @@ class TestExtractRegionMasks:
         region_masks = extract_region_masks(sample_batch)
 
         # All sequences in batch should have same regions
-        for region, mask in region_masks.items():
+        for _region, mask in region_masks.items():
             assert mask.shape[0] == 2  # batch_size
             # Both sequences should have same pattern
             assert torch.equal(mask[0], mask[1])

@@ -75,7 +75,7 @@ class TestLearnedQKScale:
         q = torch.randn(2, 4, 32, 16, requires_grad=True)
         k = torch.randn(2, 4, 32, 16, requires_grad=True)
         q_out, k_out = scale(q, k)
-        loss = (q_out.sum() + k_out.sum())
+        loss = q_out.sum() + k_out.sum()
         loss.backward()
         assert q.grad is not None
         assert k.grad is not None

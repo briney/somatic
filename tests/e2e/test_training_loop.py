@@ -76,7 +76,7 @@ class TestMiniTrainingLoop:
         losses = []
 
         # Train for a few epochs
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -156,8 +156,8 @@ class TestMiniTrainingLoop:
         assert state["metrics"]["loss"] == 0.5
 
         # Verify model weights match
-        for (name1, param1), (name2, param2) in zip(
-            model.named_parameters(), new_model.named_parameters()
+        for (name1, param1), (_name2, param2) in zip(
+            model.named_parameters(), new_model.named_parameters(), strict=True
         ):
             assert torch.allclose(param1, param2), f"Mismatch in {name1}"
 
@@ -175,7 +175,7 @@ class TestMiniTrainingLoop:
         # Track learning rates
         lrs = []
 
-        for step in range(50):
+        for _step in range(50):
             lrs.append(optimizer.param_groups[0]["lr"])
             scheduler.step()
 
@@ -213,8 +213,8 @@ class TestModelSaveLoad:
         model.eval()
         loaded_model.eval()
 
-        for (name1, param1), (name2, param2) in zip(
-            model.named_parameters(), loaded_model.named_parameters()
+        for (name1, param1), (_name2, param2) in zip(
+            model.named_parameters(), loaded_model.named_parameters(), strict=True
         ):
             assert torch.allclose(param1, param2), f"Mismatch in {name1}"
 

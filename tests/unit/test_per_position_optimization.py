@@ -261,7 +261,7 @@ class TestPerPositionEvaluatorIntegration:
         region_masks = extract_region_masks(batch_sample, all_regions)
 
         all_positions = set()
-        for region, mask in region_masks.items():
+        for _region, mask in region_masks.items():
             positions = mask[0].nonzero(as_tuple=True)[0].tolist()
             all_positions.update(positions)
 

@@ -11,7 +11,6 @@ from pathlib import Path
 
 import wandb
 
-
 # Variant name -> (variant kind, model d_model, model n_layers, n_heads,
 # expected non-emb params).
 VARIANTS: dict[str, dict[str, object]] = {
@@ -43,9 +42,7 @@ METRICS = [
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--project", default="somatic-attn-optimization", help="W&B project name."
-    )
+    parser.add_argument("--project", default="somatic-attn-optimization", help="W&B project name.")
     parser.add_argument("--entity", default=None, help="Optional W&B entity.")
     parser.add_argument(
         "--out",

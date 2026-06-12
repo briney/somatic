@@ -62,7 +62,7 @@ def trained_model(sample_data, tmp_path):
     masker = UniformMasker(mask_rate=0.15)
 
     # Train for a few steps
-    for epoch in range(2):
+    for _epoch in range(2):
         for batch in dataloader:
             masked_ids, labels = masker.apply_mask(
                 input_ids=batch["input_ids"],

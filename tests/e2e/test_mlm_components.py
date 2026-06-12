@@ -73,7 +73,7 @@ class TestMaskerTypes:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -135,7 +135,7 @@ class TestMaskerTypes:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -328,7 +328,7 @@ class TestChainAwareAttention:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -386,7 +386,7 @@ class TestChainAwareAttention:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -774,7 +774,7 @@ class TestSelectionMethods:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -838,7 +838,7 @@ class TestSelectionMethods:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 

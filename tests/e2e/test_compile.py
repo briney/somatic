@@ -190,7 +190,9 @@ def test_compiled_model_save_pretrained_roundtrip(reset_dynamo, tmp_path) -> Non
     model.save_pretrained(str(path))  # raw model -> clean keys
     reloaded = SomaticForMaskedLM.from_pretrained(str(path))
 
-    for (k1, v1), (k2, v2) in zip(model.state_dict().items(), reloaded.state_dict().items()):
+    for (k1, v1), (k2, v2) in zip(
+        model.state_dict().items(), reloaded.state_dict().items(), strict=True
+    ):
         assert k1 == k2
         assert torch.equal(v1, v2)
 

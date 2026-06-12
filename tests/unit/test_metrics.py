@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from somatic.training import (
-    MLMMetrics,
     MetricAccumulator,
+    MLMMetrics,
     compute_accuracy,
-    compute_mlm_metrics,
     compute_masked_cross_entropy,
+    compute_mlm_metrics,
     compute_perplexity,
 )
 
@@ -94,9 +94,7 @@ class TestMaskedCrossEntropy:
         targets = torch.randint(0, vocab_size, (batch_size, seq_len))
         mask_labels = torch.ones(batch_size, seq_len)
 
-        loss = compute_masked_cross_entropy(
-            logits, targets, mask_labels, reduction="none"
-        )
+        loss = compute_masked_cross_entropy(logits, targets, mask_labels, reduction="none")
         assert loss.shape == (batch_size, seq_len)
 
     def test_reduction_sum(self):
@@ -105,9 +103,7 @@ class TestMaskedCrossEntropy:
         targets = torch.randint(0, vocab_size, (batch_size, seq_len))
         mask_labels = torch.ones(batch_size, seq_len)
 
-        loss = compute_masked_cross_entropy(
-            logits, targets, mask_labels, reduction="sum"
-        )
+        loss = compute_masked_cross_entropy(logits, targets, mask_labels, reduction="sum")
         assert loss.ndim == 0
 
 
@@ -172,9 +168,7 @@ class TestMLMMetrics:
         mask_labels = torch.ones(batch_size, seq_len)
         attention_mask = torch.ones(batch_size, seq_len)
 
-        metrics = compute_mlm_metrics(
-            logits, targets, mask_labels, attention_mask
-        )
+        metrics = compute_mlm_metrics(logits, targets, mask_labels, attention_mask)
 
         assert isinstance(metrics, MLMMetrics)
         assert metrics.loss > 0
