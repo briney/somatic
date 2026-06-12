@@ -4,8 +4,7 @@ import pytest
 import torch
 
 from somatic.encoding import SomaticEncoder
-from somatic.model import SomaticConfig, SomaticModel
-
+from somatic.model import SomaticForMaskedLM
 
 # Sample antibody sequences for testing
 HEAVY_CHAIN = "EVQLVQSGAEVKKPGESLKISCKGSGYSFT"
@@ -13,7 +12,7 @@ LIGHT_CHAIN = "DIQMTQSPSSLSASVGDRVTITC"
 
 
 @pytest.fixture
-def encoder(small_model: SomaticModel) -> SomaticEncoder:
+def encoder(small_model: SomaticForMaskedLM) -> SomaticEncoder:
     """Create an encoder from the small model fixture."""
     return SomaticEncoder(small_model, device="cpu")
 
@@ -55,9 +54,7 @@ class TestLogLikelihood:
 
         assert abs(total - (heavy + light)) < 1e-5
 
-    def test_different_sequences_give_different_values(
-        self, encoder: SomaticEncoder
-    ):
+    def test_different_sequences_give_different_values(self, encoder: SomaticEncoder):
         """Different sequences should give different log-likelihood values."""
         result1 = encoder.log_likelihood(HEAVY_CHAIN, LIGHT_CHAIN)
         result2 = encoder.log_likelihood("AAAAAAAAAA", "CCCCCCCCCC")
@@ -92,9 +89,7 @@ class TestPerplexity:
         assert result["heavy_perplexity"].dim() == 0
         assert result["light_perplexity"].dim() == 0
 
-    def test_perplexity_consistent_with_log_likelihood(
-        self, encoder: SomaticEncoder
-    ):
+    def test_perplexity_consistent_with_log_likelihood(self, encoder: SomaticEncoder):
         """Perplexity should be exp(-log_likelihood / num_tokens)."""
         ll_result = encoder.log_likelihood(HEAVY_CHAIN, LIGHT_CHAIN)
         ppl_result = encoder.perplexity(HEAVY_CHAIN, LIGHT_CHAIN)
@@ -103,23 +98,15 @@ class TestPerplexity:
         light_len = len(LIGHT_CHAIN)
         total_len = heavy_len + light_len
 
-        expected_heavy_ppl = torch.exp(
-            -ll_result["heavy_log_likelihood"] / heavy_len
-        ).item()
-        expected_light_ppl = torch.exp(
-            -ll_result["light_log_likelihood"] / light_len
-        ).item()
-        expected_total_ppl = torch.exp(
-            -ll_result["log_likelihood"] / total_len
-        ).item()
+        expected_heavy_ppl = torch.exp(-ll_result["heavy_log_likelihood"] / heavy_len).item()
+        expected_light_ppl = torch.exp(-ll_result["light_log_likelihood"] / light_len).item()
+        expected_total_ppl = torch.exp(-ll_result["log_likelihood"] / total_len).item()
 
         assert abs(ppl_result["heavy_perplexity"].item() - expected_heavy_ppl) < 1e-5
         assert abs(ppl_result["light_perplexity"].item() - expected_light_ppl) < 1e-5
         assert abs(ppl_result["perplexity"].item() - expected_total_ppl) < 1e-5
 
-    def test_different_sequences_give_different_values(
-        self, encoder: SomaticEncoder
-    ):
+    def test_different_sequences_give_different_values(self, encoder: SomaticEncoder):
         """Different sequences should give different perplexity values."""
         result1 = encoder.perplexity(HEAVY_CHAIN, LIGHT_CHAIN)
         result2 = encoder.perplexity("AAAAAAAAAA", "CCCCCCCCCC")

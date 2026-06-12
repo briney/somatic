@@ -4,25 +4,23 @@ import pytest
 import torch
 
 from somatic.masking import InformationWeightedMasker, UniformMasker
-from somatic.model import SomaticConfig, SomaticModel
-from somatic.tokenizer import tokenizer
-from somatic.training import compute_masked_cross_entropy
+from somatic.model import SomaticConfig, SomaticForMaskedLM
+from somatic.model.tokenization_somatic import tokenizer
 
 
 @pytest.fixture
 def model():
-    """Create a small model for testing."""
+    """Create a small masked-LM model for testing."""
     config = SomaticConfig(
         vocab_size=32,
-        d_model=64,
-        n_layers=2,
-        n_heads=2,
-        max_seq_len=128,
-        dropout=0.0,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        max_position_embeddings=128,
+        hidden_dropout=0.0,
         attention_dropout=0.0,
-        embedding_dropout=0.0,
     )
-    return SomaticModel(config)
+    return SomaticForMaskedLM(config)
 
 
 @pytest.fixture
@@ -50,8 +48,8 @@ def sample_batch():
     special_mask = [True] + [False] * (len(tokens) - 2) + [True]
 
     return {
-        "token_ids": torch.tensor([tokens, tokens]),
-        "chain_ids": torch.tensor([chains, chains]),
+        "input_ids": torch.tensor([tokens, tokens]),
+        "token_type_ids": torch.tensor([chains, chains]),
         "attention_mask": torch.ones(2, len(tokens)),
         "cdr_mask": torch.tensor([cdr_mask, cdr_mask]),
         "special_tokens_mask": torch.tensor([special_mask, special_mask]),
@@ -64,25 +62,21 @@ class TestMLMTrainingStep:
         masker = UniformMasker(mask_rate=0.15)
 
         # Apply masking
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
-        # Forward pass
+        # Forward pass with labels -> model computes loss internally
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        # Compute loss
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         assert loss.ndim == 0
         assert loss > 0
@@ -99,26 +93,22 @@ class TestMLMTrainingStep:
         )
 
         # Apply masking with CDR weighting
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             cdr_mask=sample_batch["cdr_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
-        # Forward pass
+        # Forward pass with labels -> model computes loss internally
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        # Compute loss
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         assert loss.ndim == 0
         assert loss > 0
@@ -131,28 +121,23 @@ class TestMLMTrainingStep:
         masker = UniformMasker(mask_rate=0.15)
 
         # Get initial parameters
-        initial_params = {
-            name: param.clone() for name, param in model.named_parameters()
-        }
+        initial_params = {name: param.clone() for name, param in model.named_parameters()}
 
         # Training step
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -178,24 +163,21 @@ class TestMLMTrainingStep:
             selection_method="sampled",
         )
 
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             cdr_mask=sample_batch["cdr_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         assert loss.ndim == 0
         assert loss > 0
@@ -212,24 +194,21 @@ class TestMLMTrainingStep:
             selection_method="ranked",
         )
 
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             cdr_mask=sample_batch["cdr_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         assert loss.ndim == 0
         assert loss > 0
@@ -248,28 +227,23 @@ class TestMLMTrainingStep:
             selection_method=selection_method,
         )
 
-        initial_params = {
-            name: param.clone() for name, param in model.named_parameters()
-        }
+        initial_params = {name: param.clone() for name, param in model.named_parameters()}
 
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             cdr_mask=sample_batch["cdr_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -290,23 +264,25 @@ class TestPredictMasked:
         model.eval()
 
         # Create input with some mask tokens
-        token_ids = sample_batch["token_ids"][0:1].clone()
-        chain_ids = sample_batch["chain_ids"][0:1]
+        input_ids = sample_batch["input_ids"][0:1].clone()
+        token_type_ids = sample_batch["token_type_ids"][0:1]
 
         # Mask positions 5-10
-        original_tokens = token_ids.clone()
-        token_ids[0, 5:10] = tokenizer.mask_token_id
+        original_tokens = input_ids.clone()
+        input_ids[0, 5:10] = tokenizer.mask_token_id
 
         with torch.no_grad():
             predicted = model.predict_masked(
-                token_ids=token_ids,
-                chain_ids=chain_ids,
+                input_ids,
+                token_type_ids=token_type_ids,
             )
 
         # Check that at least some masked positions are filled
         # (with an untrained model, some might still be mask tokens)
         mask_positions = predicted[0, 5:10]
-        assert (mask_positions != tokenizer.mask_token_id).any(), "At least some masks should be filled"
+        assert (mask_positions != tokenizer.mask_token_id).any(), (
+            "At least some masks should be filled"
+        )
 
         # Check that unmasked positions are preserved
         assert torch.equal(predicted[0, :5], original_tokens[0, :5])
@@ -316,21 +292,21 @@ class TestPredictMasked:
         """Test predict_masked with temperature parameter."""
         model.eval()
 
-        token_ids = sample_batch["token_ids"][0:1].clone()
-        chain_ids = sample_batch["chain_ids"][0:1]
-        token_ids[0, 5:10] = tokenizer.mask_token_id
+        input_ids = sample_batch["input_ids"][0:1].clone()
+        token_type_ids = sample_batch["token_type_ids"][0:1]
+        input_ids[0, 5:10] = tokenizer.mask_token_id
 
         with torch.no_grad():
             # Low temperature should be more deterministic
             predicted_low_temp = model.predict_masked(
-                token_ids=token_ids.clone(),
-                chain_ids=chain_ids,
+                input_ids.clone(),
+                token_type_ids=token_type_ids,
                 temperature=0.1,
             )
             # High temperature should be more random
             predicted_high_temp = model.predict_masked(
-                token_ids=token_ids.clone(),
-                chain_ids=chain_ids,
+                input_ids.clone(),
+                token_type_ids=token_type_ids,
                 temperature=2.0,
             )
 
@@ -347,22 +323,19 @@ class TestMaskRateVariations:
         """Test that different mask rates work correctly."""
         masker = UniformMasker(mask_rate=mask_rate)
 
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=sample_batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=sample_batch["input_ids"],
             attention_mask=sample_batch["attention_mask"],
             special_tokens_mask=sample_batch["special_tokens_mask"],
         )
 
         outputs = model(
-            token_ids=masked_ids,
-            chain_ids=sample_batch["chain_ids"],
+            input_ids=masked_ids,
+            token_type_ids=sample_batch["token_type_ids"],
             attention_mask=sample_batch["attention_mask"],
+            labels=labels,
         )
 
-        loss = compute_masked_cross_entropy(
-            logits=outputs["logits"],
-            targets=sample_batch["token_ids"],
-            mask_labels=mask_labels,
-        )
+        loss = outputs.loss
 
         assert not torch.isnan(loss), f"NaN loss for mask_rate: {mask_rate}"

@@ -6,11 +6,10 @@ metric outputs are checkable analytically.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 import torch.nn as nn
+from transformers.modeling_outputs import MaskedLMOutput
 
 from somatic.eval.cross_chain_config import (
     CrossChainEvalConfig,
@@ -43,14 +42,15 @@ class _StubModel(nn.Module):
 
     def forward(
         self,
-        token_ids,
-        chain_ids,
-        attention_mask,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
         output_attentions: bool = False,
+        **kwargs,
     ):
-        b = token_ids.shape[0]
+        b = input_ids.shape[0]
         attn = tuple(a.expand(b, -1, -1, -1).contiguous() for a in self.attentions)
-        return {"attentions": attn}
+        return MaskedLMOutput(logits=None, attentions=attn)
 
 
 def _make_loader(batches: list[dict]) -> list[dict]:
@@ -60,16 +60,16 @@ def _make_loader(batches: list[dict]) -> list[dict]:
 
 def _basic_batch(B: int, S: int, heavy_len: int) -> dict:
     """Build a synthetic batch: [CLS] heavy(heavy_len) light(rest) [EOS]."""
-    token_ids = torch.zeros(B, S, dtype=torch.long)
-    chain_ids = torch.zeros(B, S, dtype=torch.long)
-    chain_ids[:, 1 + heavy_len :] = 1  # CLS+heavy=0, light+EOS=1
+    input_ids = torch.zeros(B, S, dtype=torch.long)
+    token_type_ids = torch.zeros(B, S, dtype=torch.long)
+    token_type_ids[:, 1 + heavy_len :] = 1  # CLS+heavy=0, light+EOS=1
     attention_mask = torch.ones(B, S, dtype=torch.long)
     special = torch.zeros(B, S, dtype=torch.long)
     special[:, 0] = 1  # CLS
     special[:, -1] = 1  # EOS
     return {
-        "token_ids": token_ids,
-        "chain_ids": chain_ids,
+        "input_ids": input_ids,
+        "token_type_ids": token_type_ids,
         "attention_mask": attention_mask,
         "special_tokens_mask": special,
     }
@@ -92,9 +92,7 @@ class TestConfig:
         assert build_cross_chain_eval_config(None) == CrossChainEvalConfig()
 
     def test_builder_full(self):
-        c = build_cross_chain_eval_config(
-            {"enabled": True, "interface_n": 3, "chunk_size": 2}
-        )
+        c = build_cross_chain_eval_config({"enabled": True, "interface_n": 3, "chunk_size": 2})
         assert c.enabled is True
         assert c.interface_n == 3
         assert c.chunk_size == 2
@@ -120,10 +118,10 @@ class TestConfig:
 class TestBuildMasks:
     def test_first_n_light_and_last_n_heavy(self):
         # S=10: [CLS, H, H, H, H, L, L, L, L, EOS]
-        chain_ids = torch.tensor([[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]])
+        token_type_ids = torch.tensor([[0, 0, 0, 0, 0, 1, 1, 1, 1, 1]])
         attention_mask = torch.ones(1, 10, dtype=torch.long)
         special = torch.tensor([[1, 0, 0, 0, 0, 0, 0, 0, 0, 1]])
-        m = _build_masks(chain_ids, attention_mask, special, interface_n=2)
+        m = _build_masks(token_type_ids, attention_mask, special, interface_n=2)
         # Heavy non-special positions are 1..4. Last-2 = positions 3, 4.
         # Light non-special positions are 5..8. First-2 = positions 5, 6.
         last_n_heavy = (m["interface_pair"].sum(dim=2) > 0)[0]
@@ -148,10 +146,10 @@ class TestBuildMasks:
 
     def test_short_chain_picks_all_available(self):
         # Heavy has only 1 non-special position; interface_n=5 → picks all 1.
-        chain_ids = torch.tensor([[0, 0, 1, 1, 1, 1]])
+        token_type_ids = torch.tensor([[0, 0, 1, 1, 1, 1]])
         attention_mask = torch.ones(1, 6, dtype=torch.long)
         special = torch.tensor([[1, 0, 0, 0, 0, 1]])
-        m = _build_masks(chain_ids, attention_mask, special, interface_n=5)
+        m = _build_masks(token_type_ids, attention_mask, special, interface_n=5)
         ip = m["interface_pair"][0]
         # The single heavy is position 1; first-N light = positions 2,3,4.
         assert ip[1, 2].item() and ip[1, 3].item() and ip[1, 4].item()
@@ -193,12 +191,12 @@ class TestCrossFrac:
     def test_full_cross(self):
         """Each query puts ALL its mass on the opposite-chain block → cross_frac == 1."""
         B, H, S = 1, 2, 10
-        chain_ids = torch.zeros(S, dtype=torch.long)
-        chain_ids[5:] = 1
+        token_type_ids = torch.zeros(S, dtype=torch.long)
+        token_type_ids[5:] = 1
         # Build per-query distribution that uniformly attends across opposite chain.
         attn_mat = torch.zeros(S, S)
         for q in range(S):
-            opp = (chain_ids != chain_ids[q]).float()
+            opp = (token_type_ids != token_type_ids[q]).float()
             attn_mat[q] = opp / max(opp.sum().item(), 1.0)
         attn = attn_mat.unsqueeze(0).unsqueeze(0).expand(B, H, S, S).contiguous()
         stub = _StubModel((attn,))
@@ -219,9 +217,7 @@ class TestCrossFrac:
         a = _run(stub, [batch], chunk_size=1, interface_n=2)
         b = _run(stub, [batch], chunk_size=4, interface_n=2)
         assert a["cross_frac"] == pytest.approx(b["cross_frac"], rel=1e-6, abs=1e-9)
-        assert a["interface_frac"] == pytest.approx(
-            b["interface_frac"], rel=1e-6, abs=1e-9
-        )
+        assert a["interface_frac"] == pytest.approx(b["interface_frac"], rel=1e-6, abs=1e-9)
 
     def test_specials_excluded_from_query_side(self):
         """Twiddling the [CLS] / [EOS] rows must not change cross_frac."""
@@ -243,8 +239,8 @@ class TestCrossFrac:
         """Padding key positions should not contribute to either metric."""
         B, H, S = 1, 1, 12
         # Shape: [CLS, H,H,H,H, L,L,L,L, EOS, PAD, PAD]
-        chain_ids = torch.zeros(B, S, dtype=torch.long)
-        chain_ids[:, 5:] = 1
+        token_type_ids = torch.zeros(B, S, dtype=torch.long)
+        token_type_ids[:, 5:] = 1
         attention_mask = torch.ones(B, S, dtype=torch.long)
         attention_mask[:, -2:] = 0
         special = torch.zeros(B, S, dtype=torch.long)
@@ -267,8 +263,8 @@ class TestCrossFrac:
         attn_ref = attn_ref / attn_ref.sum(dim=-1, keepdim=True).clamp(min=1e-12)
 
         batch = {
-            "token_ids": torch.zeros(B, S, dtype=torch.long),
-            "chain_ids": chain_ids,
+            "input_ids": torch.zeros(B, S, dtype=torch.long),
+            "token_type_ids": token_type_ids,
             "attention_mask": attention_mask,
             "special_tokens_mask": special,
         }
@@ -307,8 +303,8 @@ class TestInterfaceFrac:
         # its mass on first-2 light. Each in first-2 light puts all mass
         # on last-2 heavy. Other valid queries attend fully INTRA-chain
         # (so they contribute 0 to cross-chain mass).
-        chain_ids = torch.zeros(S, dtype=torch.long)
-        chain_ids[5:] = 1
+        token_type_ids = torch.zeros(S, dtype=torch.long)
+        token_type_ids[5:] = 1
         valid_idx = list(range(1, 9))
 
         attn = torch.zeros(B, H, S, S)
@@ -343,8 +339,8 @@ class TestInterfaceFrac:
         """Removing the L→H direction must lower interface_frac."""
         B, H, S = 1, 1, 10
         N = 2
-        chain_ids = torch.zeros(S, dtype=torch.long)
-        chain_ids[5:] = 1
+        token_type_ids = torch.zeros(S, dtype=torch.long)
+        token_type_ids[5:] = 1
 
         # Mass only on h-end → l-start corner. Light queries attend
         # uniformly across the heavy chain (all of it, including non-corner)

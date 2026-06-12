@@ -5,7 +5,7 @@ import torch
 from omegaconf import OmegaConf
 
 from somatic.eval.masking import EvalMasker, create_eval_masker
-from somatic.tokenizer import tokenizer
+from somatic.model.tokenization_somatic import tokenizer
 
 
 class TestEvalMasker:
@@ -18,11 +18,11 @@ class TestEvalMasker:
         seq_len = 20
 
         # Create token IDs (avoid special token IDs 0-3, 31)
-        token_ids = torch.randint(4, 24, (batch_size, seq_len))
+        input_ids = torch.randint(4, 24, (batch_size, seq_len))
 
         # Set CLS and EOS tokens
-        token_ids[:, 0] = tokenizer.cls_token_id
-        token_ids[:, -1] = tokenizer.eos_token_id
+        input_ids[:, 0] = tokenizer.cls_token_id
+        input_ids[:, -1] = tokenizer.eos_token_id
 
         # Create attention mask (all valid)
         attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
@@ -32,9 +32,9 @@ class TestEvalMasker:
         special_tokens_mask[:, 0] = True
         special_tokens_mask[:, -1] = True
 
-        # Create chain IDs (first half heavy, second half light)
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, seq_len // 2 :] = 1
+        # Create token type IDs (first half heavy, second half light)
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, seq_len // 2 :] = 1
 
         # Create CDR mask (positions 3-5 and 13-15 are CDRs)
         cdr_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
@@ -42,10 +42,10 @@ class TestEvalMasker:
         cdr_mask[:, 13:16] = 1
 
         return {
-            "token_ids": token_ids,
+            "input_ids": input_ids,
             "attention_mask": attention_mask,
             "special_tokens_mask": special_tokens_mask,
-            "chain_ids": chain_ids,
+            "token_type_ids": token_type_ids,
             "cdr_mask": cdr_mask,
         }
 
@@ -77,17 +77,17 @@ class TestEvalMasker:
         """Test that same seed produces same masks."""
         masker = EvalMasker(masker_type="uniform", mask_rate=0.15, seed=42)
 
-        device = sample_batch["token_ids"].device
+        device = sample_batch["input_ids"].device
 
         # First run
         gen1 = masker.get_generator(device)
-        masked_ids_1, mask_labels_1 = masker.apply_mask(sample_batch, generator=gen1)
+        masked_ids_1, labels_1 = masker.apply_mask(sample_batch, generator=gen1)
 
         # Second run with fresh generator (same seed)
         gen2 = masker.get_generator(device)
-        masked_ids_2, mask_labels_2 = masker.apply_mask(sample_batch, generator=gen2)
+        masked_ids_2, labels_2 = masker.apply_mask(sample_batch, generator=gen2)
 
-        assert torch.equal(mask_labels_1, mask_labels_2)
+        assert torch.equal(labels_1, labels_2)
         assert torch.equal(masked_ids_1, masked_ids_2)
 
     def test_different_seeds_different_masks(self, sample_batch):
@@ -95,16 +95,16 @@ class TestEvalMasker:
         masker1 = EvalMasker(masker_type="uniform", mask_rate=0.15, seed=42)
         masker2 = EvalMasker(masker_type="uniform", mask_rate=0.15, seed=123)
 
-        device = sample_batch["token_ids"].device
+        device = sample_batch["input_ids"].device
 
         gen1 = masker1.get_generator(device)
-        _, mask_labels_1 = masker1.apply_mask(sample_batch, generator=gen1)
+        _, labels_1 = masker1.apply_mask(sample_batch, generator=gen1)
 
         gen2 = masker2.get_generator(device)
-        _, mask_labels_2 = masker2.apply_mask(sample_batch, generator=gen2)
+        _, labels_2 = masker2.apply_mask(sample_batch, generator=gen2)
 
         # Should be different (with very high probability)
-        assert not torch.equal(mask_labels_1, mask_labels_2)
+        assert not torch.equal(labels_1, labels_2)
 
     def test_mask_rate_respected(self, sample_batch):
         """Test that mask_rate is approximately respected."""
@@ -114,9 +114,9 @@ class TestEvalMasker:
             seed=42,
         )
 
-        device = sample_batch["token_ids"].device
+        device = sample_batch["input_ids"].device
         gen = masker.get_generator(device)
-        _, mask_labels = masker.apply_mask(sample_batch, generator=gen)
+        _, labels = masker.apply_mask(sample_batch, generator=gen)
 
         # Count masked positions (excluding special tokens)
         special_mask = sample_batch["special_tokens_mask"]
@@ -124,7 +124,7 @@ class TestEvalMasker:
         valid_positions = attention_mask & ~special_mask
 
         total_valid = valid_positions.sum().item()
-        total_masked = mask_labels.sum().item()
+        total_masked = (labels != -100).sum().item()
 
         # Should be approximately 30% (with some tolerance)
         actual_rate = total_masked / total_valid
@@ -138,13 +138,13 @@ class TestEvalMasker:
             seed=42,
         )
 
-        device = sample_batch["token_ids"].device
+        device = sample_batch["input_ids"].device
         gen = masker.get_generator(device)
-        masked_ids, mask_labels = masker.apply_mask(sample_batch, generator=gen)
+        masked_ids, labels = masker.apply_mask(sample_batch, generator=gen)
 
         # CLS and EOS should not be masked
-        assert torch.all(~mask_labels[:, 0])  # CLS
-        assert torch.all(~mask_labels[:, -1])  # EOS
+        assert torch.all(labels[:, 0] == -100)  # CLS
+        assert torch.all(labels[:, -1] == -100)  # EOS
 
         # CLS and EOS tokens should be unchanged
         assert torch.all(masked_ids[:, 0] == tokenizer.cls_token_id)
@@ -196,7 +196,7 @@ class TestEvalMasker:
             seed=42,
         )
 
-        device = sample_batch["token_ids"].device
+        device = sample_batch["input_ids"].device
 
         # Run multiple times to accumulate statistics
         cdr_masked_total = 0
@@ -207,7 +207,8 @@ class TestEvalMasker:
         for seed in range(42, 52):
             masker.seed = seed
             gen = masker.get_generator(device)
-            _, mask_labels = masker.apply_mask(sample_batch, generator=gen)
+            _, labels = masker.apply_mask(sample_batch, generator=gen)
+            mask = labels != -100
 
             cdr_mask = sample_batch["cdr_mask"].bool()
             special_mask = sample_batch["special_tokens_mask"]
@@ -216,9 +217,9 @@ class TestEvalMasker:
             cdr_valid = cdr_mask & valid_mask
             non_cdr_valid = ~cdr_mask & valid_mask
 
-            cdr_masked_total += (mask_labels & cdr_valid).sum().item()
+            cdr_masked_total += (mask & cdr_valid).sum().item()
             cdr_total += cdr_valid.sum().item()
-            non_cdr_masked_total += (mask_labels & non_cdr_valid).sum().item()
+            non_cdr_masked_total += (mask & non_cdr_valid).sum().item()
             non_cdr_total += non_cdr_valid.sum().item()
 
         cdr_rate = cdr_masked_total / cdr_total if cdr_total > 0 else 0
@@ -239,11 +240,11 @@ class TestEvalMasker:
                 seed=42,
             )
 
-            device = sample_batch["token_ids"].device
+            device = sample_batch["input_ids"].device
             gen = masker.get_generator(device)
-            masked_ids, mask_labels = masker.apply_mask(sample_batch, generator=gen)
+            masked_ids, labels = masker.apply_mask(sample_batch, generator=gen)
 
             # Should produce valid output
-            assert masked_ids.shape == sample_batch["token_ids"].shape
-            assert mask_labels.shape == sample_batch["token_ids"].shape
-            assert mask_labels.sum() > 0  # Should mask something
+            assert masked_ids.shape == sample_batch["input_ids"].shape
+            assert labels.shape == sample_batch["input_ids"].shape
+            assert (labels != -100).sum() > 0  # Should mask something

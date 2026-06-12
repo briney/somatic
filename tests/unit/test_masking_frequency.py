@@ -89,19 +89,19 @@ class TestMaskingFrequencyTracker:
         """
         batch_size, seq_len = 2, 40
 
-        token_ids = torch.randint(4, 24, (batch_size, seq_len))
+        input_ids = torch.randint(4, 24, (batch_size, seq_len))
         attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
         special_tokens_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
-        special_tokens_mask[:, 0] = True   # CLS
+        special_tokens_mask[:, 0] = True  # CLS
         special_tokens_mask[:, 39] = True  # EOS
 
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, 20:] = 1  # Light chain
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, 20:] = 1  # Light chain
 
         # CDR mask: 0=FW, 1=CDR1, 2=CDR2, 3=CDR3
         cdr_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
         # Heavy CDRs
-        cdr_mask[:, 4:7] = 1    # HCDR1
+        cdr_mask[:, 4:7] = 1  # HCDR1
         cdr_mask[:, 10:13] = 2  # HCDR2
         cdr_mask[:, 16:19] = 3  # HCDR3
         # Light CDRs
@@ -110,10 +110,10 @@ class TestMaskingFrequencyTracker:
         cdr_mask[:, 35:38] = 3  # LCDR3
 
         return {
-            "token_ids": token_ids,
+            "input_ids": input_ids,
             "attention_mask": attention_mask,
             "special_tokens_mask": special_tokens_mask,
-            "chain_ids": chain_ids,
+            "token_type_ids": token_type_ids,
             "cdr_mask": cdr_mask,
         }
 
@@ -133,9 +133,9 @@ class TestMaskingFrequencyTracker:
         tracker = MaskingFrequencyTracker(config)
 
         batch = {
-            "token_ids": torch.zeros(2, 10),
+            "input_ids": torch.zeros(2, 10),
             "attention_mask": torch.ones(2, 10),
-            "chain_ids": torch.zeros(2, 10),
+            "token_type_ids": torch.zeros(2, 10),
         }
         mask_labels = torch.ones(2, 10, dtype=torch.bool)
 
@@ -182,7 +182,7 @@ class TestMaskingFrequencyTracker:
 
         # Mask some CDR positions
         mask_labels = torch.zeros(2, 40, dtype=torch.bool)
-        mask_labels[:, 4:7] = True   # HCDR1 (3 positions per seq)
+        mask_labels[:, 4:7] = True  # HCDR1 (3 positions per seq)
         mask_labels[:, 35:38] = True  # LCDR3 (3 positions per seq)
 
         tracker.update(mask_labels, sample_batch_with_cdr_mask)
@@ -225,7 +225,7 @@ class TestMaskingFrequencyTracker:
         tracker = MaskingFrequencyTracker(config)
 
         mask_labels = torch.zeros(2, 40, dtype=torch.bool)
-        mask_labels[:, 4:7] = True   # HCDR1
+        mask_labels[:, 4:7] = True  # HCDR1
         mask_labels[:, 16:19] = True  # HCDR3
 
         tracker.update(mask_labels, sample_batch_with_cdr_mask)
@@ -283,7 +283,7 @@ class TestMaskingFrequencyTracker:
 
         # Mask equal amounts from HCDR1 and HCDR3
         mask_labels = torch.zeros(2, 40, dtype=torch.bool)
-        mask_labels[:, 4:7] = True   # HCDR1: 3 per seq = 6 total
+        mask_labels[:, 4:7] = True  # HCDR1: 3 per seq = 6 total
         mask_labels[:, 16:19] = True  # HCDR3: 3 per seq = 6 total
 
         tracker.update(mask_labels, sample_batch_with_cdr_mask)
@@ -385,7 +385,7 @@ class TestMaskingFrequencyTracker:
         # Set CDR positions as nongermline, FWR as germline
         non_templated_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
         # Heavy CDRs - nongermline
-        non_templated_mask[:, 4:7] = 1    # HCDR1
+        non_templated_mask[:, 4:7] = 1  # HCDR1
         non_templated_mask[:, 10:13] = 1  # HCDR2
         non_templated_mask[:, 16:19] = 1  # HCDR3
         # Light CDRs - nongermline
@@ -441,8 +441,8 @@ class TestMaskingFrequencyTracker:
 
         # Mask equal amounts from germline and nongermline
         mask_labels = torch.zeros(2, 40, dtype=torch.bool)
-        mask_labels[:, 1:4] = True   # HFWR1 (3 germline positions)
-        mask_labels[:, 4:7] = True   # HCDR1 (3 nongermline positions)
+        mask_labels[:, 1:4] = True  # HFWR1 (3 germline positions)
+        mask_labels[:, 4:7] = True  # HCDR1 (3 nongermline positions)
 
         tracker.update(mask_labels, sample_batch_with_nongermline_mask)
         results = tracker.compute()

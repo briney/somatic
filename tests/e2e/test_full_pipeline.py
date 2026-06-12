@@ -1,18 +1,15 @@
 """End-to-end tests for the complete Somatic pipeline."""
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-from somatic import SomaticConfig, SomaticEncoder, SomaticModel
+from somatic import SomaticConfig, SomaticEncoder, SomaticForMaskedLM
 from somatic.data import create_dataloader
 from somatic.masking import UniformMasker
-from somatic.tokenizer import tokenizer
-from somatic.training import compute_masked_cross_entropy, create_optimizer
+from somatic.model.tokenization_somatic import tokenizer
+from somatic.training import create_optimizer
 
 
 @pytest.fixture
@@ -45,13 +42,13 @@ def trained_model(sample_data, tmp_path):
     # Create model
     config = SomaticConfig(
         vocab_size=32,
-        d_model=32,
-        n_layers=1,
-        n_heads=1,
-        max_seq_len=128,
-        dropout=0.0,
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        max_position_embeddings=128,
+        hidden_dropout=0.0,
     )
-    model = SomaticModel(config)
+    model = SomaticForMaskedLM(config)
     model.train()
 
     # Setup training
@@ -67,30 +64,27 @@ def trained_model(sample_data, tmp_path):
     # Train for a few steps
     for epoch in range(2):
         for batch in dataloader:
-            masked_ids, mask_labels = masker.apply_mask(
-                token_ids=batch["token_ids"],
+            masked_ids, labels = masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 special_tokens_mask=batch["special_tokens_mask"],
             )
 
             outputs = model(
-                token_ids=masked_ids,
-                chain_ids=batch["chain_ids"],
+                input_ids=masked_ids,
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
+                labels=labels,
             )
 
-            loss = compute_masked_cross_entropy(
-                logits=outputs["logits"],
-                targets=batch["token_ids"],
-                mask_labels=mask_labels,
-            )
+            loss = outputs.loss
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-    # Save model
-    model_path = tmp_path / "trained_model.pt"
+    # Save model (HuggingFace directory format)
+    model_path = tmp_path / "trained_model"
     model.save_pretrained(str(model_path))
 
     return model_path
@@ -133,7 +127,7 @@ class TestTrainEncodeGenerate:
 
     def test_predict_masked_with_trained_model(self, trained_model):
         """Test masked prediction with a trained model."""
-        model = SomaticModel.from_pretrained(trained_model)
+        model = SomaticForMaskedLM.from_pretrained(str(trained_model))
         model.eval()
 
         # Start with a partially masked sequence
@@ -147,7 +141,7 @@ class TestTrainEncodeGenerate:
         chains = [0] * (1 + len(heavy_ids)) + [1] * (len(light_ids) + 1)
 
         token_ids = torch.tensor([tokens])
-        chain_ids = torch.tensor([chains])
+        token_type_ids = torch.tensor([chains])
 
         # Mask CDR-like region (positions 5-10)
         masked_ids = token_ids.clone()
@@ -156,8 +150,8 @@ class TestTrainEncodeGenerate:
         # Predict masked positions
         with torch.no_grad():
             predicted = model.predict_masked(
-                token_ids=masked_ids,
-                chain_ids=chain_ids,
+                input_ids=masked_ids,
+                token_type_ids=token_type_ids,
             )
 
         # Check that we got valid amino acids
@@ -180,9 +174,7 @@ class TestEncoderOutputFormats:
         """Test numpy output format."""
         encoder = SomaticEncoder.from_pretrained(trained_model, pooling="mean")
 
-        embedding = encoder.encode(
-            "EVQLVES", "DIQMTQ", return_numpy=True
-        )
+        embedding = encoder.encode("EVQLVES", "DIQMTQ", return_numpy=True)
 
         assert isinstance(embedding, np.ndarray)
         assert embedding.shape == (32,)

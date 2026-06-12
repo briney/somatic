@@ -4,24 +4,23 @@ import pytest
 import torch
 
 from somatic import SomaticEncoder
-from somatic.encoding import MeanMaxPooling, create_pooling
-from somatic.model import SomaticConfig, SomaticModel
+from somatic.encoding import create_pooling
+from somatic.model import SomaticConfig, SomaticForMaskedLM
 
 
 @pytest.fixture
 def small_model():
-    """Create a small model for testing."""
+    """Create a small masked-LM model for testing (the encoder wraps an MLM)."""
     config = SomaticConfig(
         vocab_size=32,
-        d_model=64,
-        n_layers=2,
-        n_heads=2,
-        max_seq_len=64,
-        dropout=0.0,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        max_position_embeddings=64,
+        hidden_dropout=0.0,
         attention_dropout=0.0,
-        embedding_dropout=0.0,
     )
-    return SomaticModel(config)
+    return SomaticForMaskedLM(config)
 
 
 @pytest.fixture
@@ -45,7 +44,7 @@ class TestSomaticEncoder:
 
         # Should return full sequence embeddings
         assert embedding.ndim == 2
-        assert embedding.shape[1] == 64  # d_model
+        assert embedding.shape[1] == 64  # hidden_size
         # Sequence length: CLS + heavy + light + EOS
         expected_len = 1 + len(heavy) + len(light) + 1
         assert embedding.shape[0] == expected_len
@@ -58,7 +57,7 @@ class TestSomaticEncoder:
 
         # Should return pooled embedding
         assert embedding.ndim == 1
-        assert embedding.shape[0] == 64  # d_model
+        assert embedding.shape[0] == 64  # hidden_size
 
     def test_encode_return_numpy(self, mean_encoder):
         heavy = "EVQLVESGGGLVQPGRSLRLSCAAS"
@@ -153,8 +152,6 @@ class TestEncoderBatching:
         heavy_chains = ["EVQLVESGGGLVQ"] * 100
         light_chains = ["DIQMTQSPSS"] * 100
 
-        embeddings = mean_encoder.encode_batch(
-            heavy_chains, light_chains, batch_size=32
-        )
+        embeddings = mean_encoder.encode_batch(heavy_chains, light_chains, batch_size=32)
 
         assert embeddings.shape == (100, 64)

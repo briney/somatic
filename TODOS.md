@@ -426,30 +426,46 @@ Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 
 ## Phase 11 — Tests (`tests/`)
 
-- [ ] `conftest.py`: update fixtures —
-      `small_config = SomaticConfig(hidden_size=64, num_hidden_layers=2,
-      num_attention_heads=2, max_position_embeddings=64, hidden_dropout=0.0)`;
-      `small_model = SomaticForMaskedLM(small_config)`; add a base-`SomaticModel`
-      fixture. `sample_batch` keys → `input_ids` / `token_type_ids`.
-- [ ] Update every existing test: forward calls (`input_ids`/`token_type_ids`),
-      output access (`outputs.logits` / `outputs.last_hidden_state`), collator key
-      assertions, masker `(masked_input_ids, labels)` return, region/per-position
-      eval.
-- [ ] Add HF-compat tests (mirror `ref: tests/model/test_push_to_hub.py`,
-      `tests/test_e2e_lifecycle.py`):
-  - [ ] **save→reload**: tiny `SomaticForMaskedLM` → `save_pretrained(tmp)` →
-        `SomaticForMaskedLM.from_pretrained(tmp)`; assert logits match.
-  - [ ] **custom-code files copied**: after `save_pretrained` with
-        `register_for_auto_class`, assert `modeling_somatic.py`,
-        `configuration_somatic.py`, `tokenization_somatic.py`, and helper files
-        land beside `config.json`, and `auto_map` entries exist in `config.json`.
-  - [ ] **remote reload in subprocess**: fresh interpreter (no `import somatic`),
-        `AutoModelForMaskedLM.from_pretrained(tmp, trust_remote_code=True)` and
-        `AutoTokenizer.from_pretrained(tmp, trust_remote_code=True)`; assert class
-        name and that `tok(heavy, light)` yields expected `input_ids` +
-        `token_type_ids`.
-  - [ ] Keep the "tiny model trains a few steps + one eval" end-to-end test
-        (per global CLAUDE.md), updated to the new API.
+- [x] `conftest.py`: `small_config` uses HF field names
+      (`hidden_size=64, num_hidden_layers=2, num_attention_heads=2,
+      max_position_embeddings=64, hidden_dropout=0.0, attention_dropout=0.0`);
+      `small_model = SomaticForMaskedLM(small_config)`; added a base
+      `small_base_model = SomaticModel(small_config)` fixture; `sample_batch` keys
+      → `input_ids` / `token_type_ids` / `attention_mask`.
+- [x] Migrated all 24 existing test files to the new API: forward calls use
+      `input_ids` + keyword `token_type_ids` (never positional — the model's 2nd
+      positional is `attention_mask`); output access via `outputs.logits` /
+      `outputs.last_hidden_state` / `outputs.hidden_states` / `outputs.attentions`;
+      collator key assertions; masker/`EvalMasker` `(masked_input_ids, labels)`
+      return with `mask = labels != -100`; region/per-position eval threaded
+      `token_type_ids`. Class split honored (base `SomaticModel` vs
+      `SomaticForMaskedLM`); helper-module constructor kwargs (`d_model`/`n_heads`/
+      `d_ffn`/`max_seq_len` on `FusedSwiGLUFFN`/attention/`TransformerBlock`/RoPE)
+      left unchanged. Checkpoint test rewritten to the HF-directory +
+      `training_state.pt` format (`save()` → dir, `load_training_state()`); dropped
+      the obsolete `extra_state` and `add_chain_separator` tests (removed features).
+      The trickiest files (`test_transformer`, `test_attention`, `test_tokenizer`,
+      `test_checkpoint`) were done by hand; the rest by parallel subagents against a
+      shared migration spec, each verified with pytest.
+- [x] Added `tests/integration/test_hf_compat.py`:
+  - [x] **save→reload**: tiny `SomaticForMaskedLM` round-trips with identical logits
+        and the lm_head tie intact after reload.
+  - [x] **custom-code files copied**: asserts `modeling_somatic.py`,
+        `configuration_somatic.py`, `tokenization_somatic.py`, and all helper files
+        land beside `config.json`/`model.safetensors`/tokenizer files, and that
+        `auto_map` (AutoConfig + AutoModelForMaskedLM) is present in `config.json`.
+  - [x] **remote reload in subprocess**: fresh interpreter (asserts `somatic` is
+        never imported), `AutoModelForMaskedLM` + `AutoTokenizer.from_pretrained(
+        tmp, trust_remote_code=True)`; asserts the class is `SomaticForMaskedLM`
+        loaded from the `transformers_modules.*` dynamic namespace and that
+        `tok(heavy, light)` yields the expected `input_ids` + `token_type_ids`.
+  - [x] "tiny model trains a few steps + one eval" coverage retained: real `Trainer`
+        steps (`test_compile.py`, `test_training_loop.py`) + `Evaluator.evaluate`
+        (`test_cross_chain_eval_integration.py`), all migrated and green.
+- [x] Full suite green: **575 passed** (570 migrated + 5 new HF-compat). All
+      migrated test files are `ruff format`-clean; migration introduced no new lint
+      (18 pre-existing B007/B905/F841 in long-standing test code remain for the
+      Phase 12 repo-wide ruff pass).
 
 ## Phase 12 — Verification
 

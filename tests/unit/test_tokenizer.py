@@ -1,8 +1,12 @@
 """Tests for tokenizer."""
 
-import pytest
-
-from somatic.tokenizer import AA_END_IDX, AA_START_IDX, DEFAULT_VOCAB, Tokenizer, tokenizer
+from somatic.model.tokenization_somatic import (
+    AA_END_IDX,
+    AA_START_IDX,
+    DEFAULT_VOCAB,
+    SomaticTokenizerFast,
+    tokenizer,
+)
 
 
 class TestTokenizer:
@@ -53,7 +57,7 @@ class TestTokenizer:
 
     def test_tokenizer_instance(self):
         # Test that creating a new tokenizer works
-        tok = Tokenizer()
+        tok = SomaticTokenizerFast()
         assert len(tok) == 32
         assert tok.cls_token_id == 0
 
@@ -61,36 +65,20 @@ class TestTokenizer:
 class TestEncodePaired:
     """Tests for encode_paired method."""
 
-    def test_encode_paired_no_separator(self):
-        """Test paired encoding without chain separator (for ChainAwareAttention)."""
-        result = tokenizer.encode_paired("AC", "DE", add_chain_separator=False)
+    def test_encode_paired(self):
+        """Test paired encoding emits input_ids/token_type_ids/attention_mask."""
+        result = tokenizer.encode_paired("AC", "DE")
 
         # Check input_ids: <cls> A C D E <eos>
         assert result["input_ids"][0] == tokenizer.cls_token_id
         assert result["input_ids"][-1] == tokenizer.eos_token_id
         assert len(result["input_ids"]) == 6  # CLS + 2 + 2 + EOS
 
-        # Check chain_ids: [0, 0, 0, 1, 1, 1] (CLS+heavy=0, light+EOS=1)
-        assert result["chain_ids"] == [0, 0, 0, 1, 1, 1]
+        # Check token_type_ids: [0, 0, 0, 1, 1, 1] (CLS+heavy=0, light+EOS=1)
+        assert result["token_type_ids"] == [0, 0, 0, 1, 1, 1]
 
         # Check attention_mask
         assert result["attention_mask"] == [1, 1, 1, 1, 1, 1]
-
-    def test_encode_paired_with_separator(self):
-        """Test paired encoding with chain separator (for MultiHeadAttention)."""
-        result = tokenizer.encode_paired("AC", "DE", add_chain_separator=True)
-
-        # Check input_ids: <cls> A C <cls> D E <eos>
-        assert result["input_ids"][0] == tokenizer.cls_token_id
-        assert result["input_ids"][3] == tokenizer.cls_token_id  # separator
-        assert result["input_ids"][-1] == tokenizer.eos_token_id
-        assert len(result["input_ids"]) == 7  # CLS + 2 + CLS + 2 + EOS
-
-        # Check chain_ids: [0, 0, 0, 0, 1, 1, 1] (CLS+heavy+sep=0, light+EOS=1)
-        assert result["chain_ids"] == [0, 0, 0, 0, 1, 1, 1]
-
-        # Check attention_mask
-        assert result["attention_mask"] == [1, 1, 1, 1, 1, 1, 1]
 
     def test_encode_paired_return_tensors(self):
         """Test paired encoding with PyTorch tensor output."""
@@ -99,27 +87,27 @@ class TestEncodePaired:
         result = tokenizer.encode_paired("AC", "DE", return_tensors="pt")
 
         assert isinstance(result["input_ids"], torch.Tensor)
-        assert isinstance(result["chain_ids"], torch.Tensor)
+        assert isinstance(result["token_type_ids"], torch.Tensor)
         assert isinstance(result["attention_mask"], torch.Tensor)
 
         # Should have batch dimension
         assert result["input_ids"].shape == (1, 6)
-        assert result["chain_ids"].shape == (1, 6)
+        assert result["token_type_ids"].shape == (1, 6)
 
     def test_encode_paired_longer_sequences(self):
         """Test paired encoding with longer realistic sequences."""
         heavy = "EVQLVESGGGLVQ"
         light = "DIQMTQSPSS"
-        result = tokenizer.encode_paired(heavy, light, add_chain_separator=False)
+        result = tokenizer.encode_paired(heavy, light)
 
         expected_len = 1 + len(heavy) + len(light) + 1  # CLS + heavy + light + EOS
         assert len(result["input_ids"]) == expected_len
-        assert len(result["chain_ids"]) == expected_len
+        assert len(result["token_type_ids"]) == expected_len
 
-        # Heavy chain tokens should have chain_id 0
-        heavy_chain_ids = result["chain_ids"][: 1 + len(heavy)]
-        assert all(c == 0 for c in heavy_chain_ids)
+        # Heavy chain tokens should have token_type_id 0
+        heavy_type_ids = result["token_type_ids"][: 1 + len(heavy)]
+        assert all(c == 0 for c in heavy_type_ids)
 
-        # Light chain tokens should have chain_id 1
-        light_chain_ids = result["chain_ids"][1 + len(heavy) :]
-        assert all(c == 1 for c in light_chain_ids)
+        # Light chain tokens should have token_type_id 1
+        light_type_ids = result["token_type_ids"][1 + len(heavy) :]
+        assert all(c == 1 for c in light_type_ids)

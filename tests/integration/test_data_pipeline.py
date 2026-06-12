@@ -1,14 +1,11 @@
 """Integration tests for the data pipeline."""
 
-import tempfile
-from pathlib import Path
-
 import pandas as pd
 import pytest
 import torch
 
 from somatic.data import AntibodyCollator, AntibodyDataset, create_dataloader
-from somatic.tokenizer import tokenizer
+from somatic.model.tokenization_somatic import tokenizer
 
 
 @pytest.fixture
@@ -93,18 +90,18 @@ class TestCollatorIntegration:
         examples = [dataset[i] for i in range(len(dataset))]
         batch = collator(examples)
 
-        assert "token_ids" in batch
-        assert "chain_ids" in batch
+        assert "input_ids" in batch
+        assert "token_type_ids" in batch
         assert "attention_mask" in batch
         assert "special_tokens_mask" in batch
 
         # Check shapes
-        assert batch["token_ids"].shape[0] == 4
-        assert batch["chain_ids"].shape == batch["token_ids"].shape
-        assert batch["attention_mask"].shape == batch["token_ids"].shape
+        assert batch["input_ids"].shape[0] == 4
+        assert batch["token_type_ids"].shape == batch["input_ids"].shape
+        assert batch["attention_mask"].shape == batch["input_ids"].shape
 
         # Check that CLS and EOS are in correct positions
-        assert (batch["token_ids"][:, 0] == tokenizer.cls_token_id).all()
+        assert (batch["input_ids"][:, 0] == tokenizer.cls_token_id).all()
 
     def test_collator_respects_max_length(self, sample_csv):
         """Test that collator respects maximum length."""
@@ -114,7 +111,7 @@ class TestCollatorIntegration:
         examples = [dataset[i] for i in range(len(dataset))]
         batch = collator(examples)
 
-        assert batch["token_ids"].shape[1] <= 32
+        assert batch["input_ids"].shape[1] <= 32
 
     def test_collator_pad_to_max(self, sample_csv):
         """Test pad_to_max option."""
@@ -124,7 +121,7 @@ class TestCollatorIntegration:
         examples = [dataset[0]]  # Single example
         batch = collator(examples)
 
-        assert batch["token_ids"].shape[1] == 128
+        assert batch["input_ids"].shape[1] == 128
 
 
 class TestDataLoaderIntegration:
@@ -142,8 +139,8 @@ class TestDataLoaderIntegration:
         assert len(batches) == 2  # 4 examples / batch_size 2
 
         for batch in batches:
-            assert batch["token_ids"].shape[0] == 2
-            assert isinstance(batch["token_ids"], torch.Tensor)
+            assert batch["input_ids"].shape[0] == 2
+            assert isinstance(batch["input_ids"], torch.Tensor)
 
     def test_dataloader_shuffle(self, sample_csv):
         """Test that shuffling works."""
@@ -164,7 +161,7 @@ class TestDataLoaderIntegration:
         batch1 = next(iter(dataloader1))
         batch2 = next(iter(dataloader2))
 
-        assert torch.equal(batch1["token_ids"], batch2["token_ids"])
+        assert torch.equal(batch1["input_ids"], batch2["input_ids"])
 
     def test_dataloader_drop_last(self, sample_csv):
         """Test drop_last option."""
@@ -182,18 +179,18 @@ class TestDataLoaderIntegration:
 class TestEndToEndDataPipeline:
     def test_data_to_model_forward(self, sample_csv):
         """Test complete pipeline from data loading to model forward."""
-        from somatic.model import SomaticConfig, SomaticModel
+        from somatic.model import SomaticConfig, SomaticForMaskedLM
 
         # Create model
         config = SomaticConfig(
             vocab_size=32,
-            d_model=64,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.eval()
 
         # Create dataloader
@@ -208,11 +205,11 @@ class TestEndToEndDataPipeline:
         for batch in dataloader:
             with torch.no_grad():
                 outputs = model(
-                    token_ids=batch["token_ids"],
-                    chain_ids=batch["chain_ids"],
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
+                    token_type_ids=batch["token_type_ids"],
                 )
 
-            assert "logits" in outputs
-            assert outputs["logits"].shape[0] == batch["token_ids"].shape[0]
-            assert not torch.isnan(outputs["logits"]).any()
+            assert outputs.logits is not None
+            assert outputs.logits.shape[0] == batch["input_ids"].shape[0]
+            assert not torch.isnan(outputs.logits).any()
