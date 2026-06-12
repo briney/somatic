@@ -11,7 +11,7 @@ from ..base import MetricBase
 from ..registry import register_metric
 
 if TYPE_CHECKING:
-    from ...model.transformer import ModelOutput
+    from transformers.modeling_outputs import MaskedLMOutput
 
 
 @register_metric("masked_accuracy")
@@ -34,25 +34,26 @@ class MaskedAccuracyMetric(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate accuracy from a batch.
 
         Args:
-            outputs: Model outputs with "logits" key.
-            batch: Input batch with "token_ids" (original tokens).
-            mask_labels: Binary mask indicating masked positions.
+            outputs: Model outputs with ``logits``.
+            batch: Input batch (unused — targets come from ``labels``).
+            labels: MLM labels (original ids at masked positions, -100 elsewhere).
         """
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
+        logits = outputs.logits
+        assert logits is not None
+        targets = labels
 
         # Get predictions
         predictions = logits.argmax(dim=-1)
 
         # Only evaluate masked positions
-        mask = mask_labels.bool()
+        mask = labels != -100
         correct = (predictions == targets) & mask
 
         self._correct += correct.sum().item()
@@ -103,25 +104,25 @@ class _MaskedCrossEntropyMetric(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate cross-entropy loss on masked positions.
 
         Args:
-            outputs: Model outputs with "logits" key.
-            batch: Input batch with "token_ids" (original tokens).
-            mask_labels: Binary mask indicating masked positions.
+            outputs: Model outputs with ``logits``.
+            batch: Input batch (unused — targets come from ``labels``).
+            labels: MLM labels (original ids at masked positions, -100 elsewhere).
         """
-        logits = outputs["logits"]
-        targets = batch["token_ids"]
-        assert targets is not None
+        logits = outputs.logits
+        assert logits is not None
+        targets = labels
 
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)
         targets_flat = targets.view(-1)
-        mask_flat = mask_labels.view(-1).bool()
+        mask_flat = (labels != -100).view(-1)
 
         loss_per_token = torch.nn.functional.cross_entropy(
             logits_flat, targets_flat, reduction="none"

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import wandb
 
-
 VARIANTS: dict[str, dict[str, object]] = {
     "separate_chain_aware": {
         "label": "separate-QKV chain-aware",
@@ -70,7 +69,14 @@ def main() -> None:
         traj = []
         for row in history:
             if row.get("eval/loss") is not None:
-                traj.append((row.get("_step"), row.get("eval/loss"), row.get("eval/ppl"), row.get("eval/mask_acc")))
+                traj.append(
+                    (
+                        row.get("_step"),
+                        row.get("eval/loss"),
+                        row.get("eval/ppl"),
+                        row.get("eval/mask_acc"),
+                    )
+                )
             for m in METRICS:
                 if row.get(m) is not None:
                     last[m] = row[m]
@@ -125,7 +131,9 @@ def main() -> None:
     md_lines.append(f"{'step':>6}  " + "  ".join(f"{r['name']:>27}" for r in rows))
     # Stitch trajectories into a step-aligned grid
     all_steps = sorted({s for r in rows for (s, *_rest) in r["trajectory"]})
-    by_run = {r["name"]: dict((s, (el, ep, ea)) for (s, el, ep, ea) in r["trajectory"]) for r in rows}
+    by_run = {
+        r["name"]: dict((s, (el, ep, ea)) for (s, el, ep, ea) in r["trajectory"]) for r in rows
+    }
     for step in all_steps:
         cells = []
         for r in rows:

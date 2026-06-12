@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from accelerate import Accelerator
     from torch.utils.data import DataLoader
 
-    from ..model import SomaticModel
+    from ..model import SomaticForMaskedLM
     from .masking import EvalMasker
     from .region_config import RegionEvalConfig
 
@@ -72,7 +72,7 @@ def _compute_individual_region_results(
     return results
 
 
-def _get_model_device(model: SomaticModel, accelerator: Accelerator | None) -> torch.device:
+def _get_model_device(model: SomaticForMaskedLM, accelerator: Accelerator | None) -> torch.device:
     """Get the device the model is on."""
     if accelerator is not None:
         return accelerator.device
@@ -101,10 +101,10 @@ def _accumulate_positions(
 
 
 def _evaluate_masked_group(
-    model: SomaticModel,
-    token_ids: torch.Tensor,
+    model: SomaticForMaskedLM,
+    input_ids: torch.Tensor,
     group_mask: torch.Tensor,
-    chain_ids: torch.Tensor,
+    token_type_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     device: torch.device,
 ) -> dict[str, float]:
@@ -112,30 +112,31 @@ def _evaluate_masked_group(
 
     Args:
         model: The model to evaluate.
-        token_ids: Token IDs for a single sample (1-D).
+        input_ids: Token IDs for a single sample (1-D).
         group_mask: Boolean mask of positions to mask and evaluate (1-D).
-        chain_ids: Chain IDs for the sample (1-D).
+        token_type_ids: Chain identity for the sample (1-D).
         attention_mask: Attention mask for the sample (1-D).
         device: Device for tensor creation.
 
     Returns:
         Dict with correct, total_loss, total_prob, count.
     """
-    from ..tokenizer import tokenizer
+    from ..model.tokenization_somatic import tokenizer
 
-    masked_ids = token_ids.clone()
+    masked_ids = input_ids.clone()
     masked_ids[group_mask] = tokenizer.mask_token_id
 
     outputs = model(
-        token_ids=masked_ids.unsqueeze(0),
-        chain_ids=chain_ids.unsqueeze(0),
+        input_ids=masked_ids.unsqueeze(0),
+        token_type_ids=token_type_ids.unsqueeze(0),
         attention_mask=attention_mask.unsqueeze(0),
     )
-    logits = outputs["logits"][0]
+    assert outputs.logits is not None
+    logits = outputs.logits[0]
 
     pos_indices = group_mask.nonzero(as_tuple=True)[0]
     pos_logits = logits[pos_indices]
-    targets = token_ids[pos_indices]
+    targets = input_ids[pos_indices]
 
     losses = torch.nn.functional.cross_entropy(pos_logits, targets, reduction="none")
     probs = torch.softmax(pos_logits, dim=-1)
@@ -253,7 +254,7 @@ def compute_aggregate_metrics(
 
 
 def run_standard_eval(
-    model: SomaticModel,
+    model: SomaticForMaskedLM,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     config: RegionEvalConfig,
@@ -321,28 +322,30 @@ def run_standard_eval(
             if batch.get("cdr_mask") is None:
                 continue
 
-            # Create mask labels (same logic as main evaluate())
+            # Build masked inputs + boolean mask (same logic as main evaluate())
             if eval_masker is not None:
-                masked_ids, mask_labels = eval_masker.apply_mask(
+                masked_input_ids, labels = eval_masker.apply_mask(
                     batch=batch,
                     generator=generator,
                 )
+                mask = labels != -100
             else:
-                mask_labels = create_eval_mask(batch, device)
-                masked_ids = batch["token_ids"].clone()
-                from ..tokenizer import tokenizer
+                mask = create_eval_mask(batch, device).bool()
+                masked_input_ids = batch["input_ids"].clone()
+                from ..model.tokenization_somatic import tokenizer
 
-                masked_ids[mask_labels.bool()] = tokenizer.mask_token_id
+                masked_input_ids[mask] = tokenizer.mask_token_id
 
             # Forward pass
             outputs = model(
-                token_ids=masked_ids,
-                chain_ids=batch["chain_ids"],
+                input_ids=masked_input_ids,
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
             )
 
-            logits = outputs["logits"]
-            targets = batch["token_ids"]
+            logits = outputs.logits
+            assert logits is not None
+            targets = batch["input_ids"]
             predictions = logits.argmax(dim=-1)
 
             # Compute per-token loss
@@ -364,7 +367,6 @@ def run_standard_eval(
             except ValueError:
                 continue
 
-            mask = mask_labels.bool()
             correct_mask = (predictions == targets) & mask
 
             # Process individual regions
@@ -429,7 +431,7 @@ def run_standard_eval(
 
 
 def run_per_position_eval(
-    model: SomaticModel,
+    model: SomaticForMaskedLM,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     position_batch_size: int,
@@ -490,7 +492,7 @@ def run_per_position_eval(
     with torch.no_grad(), eval_task_cm as progress_task:
         for batch in eval_loader:
             # Process each sample in the batch individually
-            batch_size = batch["token_ids"].shape[0]
+            batch_size = batch["input_ids"].shape[0]
             for i in range(batch_size):
                 # Extract single sample
                 sample = {k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
@@ -593,7 +595,7 @@ def run_per_position_eval(
 
 
 def run_region_level_eval(
-    model: SomaticModel,
+    model: SomaticForMaskedLM,
     eval_loader: DataLoader,
     regions: set[AntibodyRegion] | None,
     config: RegionEvalConfig,
@@ -643,7 +645,7 @@ def run_region_level_eval(
     with torch.no_grad(), eval_task_cm as progress_task:
         for batch in eval_loader:
             # Process each sample in the batch individually
-            batch_size = batch["token_ids"].shape[0]
+            batch_size = batch["input_ids"].shape[0]
             for i in range(batch_size):
                 # Extract single sample
                 sample = {k: v[i] if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
@@ -682,8 +684,8 @@ def run_region_level_eval(
                             k: v.to(device) if isinstance(v, torch.Tensor) else v
                             for k, v in sample.items()
                         }
-                        token_ids = sample_on_device["token_ids"]
-                        chain_ids = sample_on_device["chain_ids"]
+                        input_ids = sample_on_device["input_ids"]
+                        token_type_ids = sample_on_device["token_type_ids"]
                         attention_mask = sample_on_device["attention_mask"]
                         non_templated = sample_on_device["non_templated_mask"]
 
@@ -707,9 +709,9 @@ def run_region_level_eval(
                             try:
                                 result = _evaluate_masked_group(
                                     model,
-                                    token_ids,
+                                    input_ids,
                                     group_mask,
-                                    chain_ids,
+                                    token_type_ids,
                                     attention_mask,
                                     device,
                                 )

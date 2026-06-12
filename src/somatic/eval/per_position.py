@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING
 import torch
 from torch import Tensor
 
-from ..tokenizer import tokenizer
+from ..model.tokenization_somatic import tokenizer
 from ..utils.progress import ProgressManager
 from .regions import AntibodyRegion, extract_region_masks
 
 if TYPE_CHECKING:
-    from ..model import SomaticModel
+    from ..model import SomaticForMaskedLM
 
 
 class PerPositionEvaluator:
@@ -41,7 +41,7 @@ class PerPositionEvaluator:
 
     def __init__(
         self,
-        model: SomaticModel,
+        model: SomaticForMaskedLM,
         position_batch_size: int = 32,
         device: torch.device | None = None,
         show_progress: bool = True,
@@ -64,8 +64,8 @@ class PerPositionEvaluator:
         ----------
         sample
             Single sequence dictionary with:
-            - token_ids: (seq_len,) token IDs
-            - chain_ids: (seq_len,) chain identifiers
+            - input_ids: (seq_len,) token IDs
+            - token_type_ids: (seq_len,) chain identifiers
             - attention_mask: (seq_len,) valid position mask
             - special_tokens_mask: (seq_len,) optional special tokens mask
 
@@ -83,8 +83,8 @@ class PerPositionEvaluator:
         # Move sample to device
         sample = {k: v.to(self.device) if isinstance(v, Tensor) else v for k, v in sample.items()}
 
-        token_ids = sample["token_ids"]
-        chain_ids = sample["chain_ids"]
+        input_ids = sample["input_ids"]
+        token_type_ids = sample["token_type_ids"]
         attention_mask = sample["attention_mask"]
         special_tokens_mask = sample.get("special_tokens_mask")
 
@@ -115,27 +115,28 @@ class PerPositionEvaluator:
                 batch_size = len(batch_positions)
 
                 # Create batched input: same sequence repeated batch_size times
-                batched_token_ids = token_ids.unsqueeze(0).expand(batch_size, -1).clone()
-                batched_chain_ids = chain_ids.unsqueeze(0).expand(batch_size, -1)
+                batched_input_ids = input_ids.unsqueeze(0).expand(batch_size, -1).clone()
+                batched_token_type_ids = token_type_ids.unsqueeze(0).expand(batch_size, -1)
                 batched_attention = attention_mask.unsqueeze(0).expand(batch_size, -1)
 
                 # Mask one position per batch item
                 for i, pos in enumerate(batch_positions):
-                    batched_token_ids[i, pos] = tokenizer.mask_token_id
+                    batched_input_ids[i, pos] = tokenizer.mask_token_id
 
                 # Forward pass
                 outputs = self.model(
-                    token_ids=batched_token_ids,
-                    chain_ids=batched_chain_ids,
+                    input_ids=batched_input_ids,
+                    token_type_ids=batched_token_type_ids,
                     attention_mask=batched_attention,
                 )
 
-                logits = outputs["logits"]
+                logits = outputs.logits
+                assert logits is not None
 
                 # Extract metrics for each position
                 for i, pos in enumerate(batch_positions):
                     pos_logits = logits[i, pos]  # (vocab_size,)
-                    target = token_ids[pos].item()
+                    target = input_ids[pos].item()
 
                     # Prediction
                     pred = pos_logits.argmax().item()
@@ -249,7 +250,7 @@ class RegionMaskingEvaluator:
 
     def __init__(
         self,
-        model: SomaticModel,
+        model: SomaticForMaskedLM,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
@@ -295,23 +296,24 @@ class RegionMaskingEvaluator:
         if not positions:
             return {}
 
-        token_ids = sample["token_ids"]
-        chain_ids = sample["chain_ids"]
+        input_ids = sample["input_ids"]
+        token_type_ids = sample["token_type_ids"]
         attention_mask = sample["attention_mask"]
 
         # Create masked version with entire region masked
-        masked_ids = token_ids.clone()
+        masked_ids = input_ids.clone()
         masked_ids[region_mask] = tokenizer.mask_token_id
 
         self.model.eval()
         with torch.no_grad():
             outputs = self.model(
-                token_ids=masked_ids.unsqueeze(0),
-                chain_ids=chain_ids.unsqueeze(0),
+                input_ids=masked_ids.unsqueeze(0),
+                token_type_ids=token_type_ids.unsqueeze(0),
                 attention_mask=attention_mask.unsqueeze(0),
             )
 
-            logits = outputs["logits"][0]  # Remove batch dim
+            assert outputs.logits is not None
+            logits = outputs.logits[0]  # Remove batch dim
 
             # Compute metrics for all positions in region
             total_correct = 0
@@ -320,7 +322,7 @@ class RegionMaskingEvaluator:
 
             for pos in positions:
                 pos_logits = logits[pos]
-                target = token_ids[pos].item()
+                target = input_ids[pos].item()
 
                 # Prediction
                 pred = pos_logits.argmax().item()

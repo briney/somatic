@@ -257,7 +257,7 @@ def extract_region_masks(
     region identification. Framework regions are inferred from non-CDR positions.
 
     The sequence format is assumed to be: [CLS] heavy_chain light_chain [EOS]
-    - chain_ids: 0 for CLS and heavy chain, 1 for light chain and EOS
+    - token_type_ids: 0 for CLS and heavy chain, 1 for light chain and EOS
     - cdr_mask: 0 for FW, 1 for CDR1, 2 for CDR2, 3 for CDR3
 
     Parameters
@@ -265,7 +265,7 @@ def extract_region_masks(
     batch
         Batch dictionary with:
         - cdr_mask: (batch, seq_len) detailed CDR mask (0=FW, 1=CDR1, 2=CDR2, 3=CDR3)
-        - chain_ids: (batch, seq_len) chain identifiers (0=heavy, 1=light)
+        - token_type_ids: (batch, seq_len) chain identifiers (0=heavy, 1=light)
         - attention_mask: (batch, seq_len) valid position mask
         - special_tokens_mask: (batch, seq_len) optional special tokens mask
     regions
@@ -277,16 +277,16 @@ def extract_region_masks(
         Dictionary mapping each region to a (batch, seq_len) boolean mask.
     """
     cdr_mask = batch.get("cdr_mask")
-    chain_ids = batch["chain_ids"]
+    token_type_ids = batch["token_type_ids"]
     attention_mask = batch["attention_mask"]
     special_tokens_mask = batch.get("special_tokens_mask")
 
     if cdr_mask is None:
         raise ValueError("cdr_mask is required to extract region masks")
-    assert chain_ids is not None and attention_mask is not None
+    assert token_type_ids is not None and attention_mask is not None
 
-    batch_size, seq_len = chain_ids.shape
-    device = chain_ids.device
+    batch_size, seq_len = token_type_ids.shape
+    device = token_type_ids.device
 
     if regions is None:
         regions = set(AntibodyRegion)
@@ -298,8 +298,8 @@ def extract_region_masks(
         result[region] = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
 
     # Create chain masks (excluding special tokens if present)
-    heavy_chain_mask = (chain_ids == 0) & attention_mask.bool()
-    light_chain_mask = (chain_ids == 1) & attention_mask.bool()
+    heavy_chain_mask = (token_type_ids == 0) & attention_mask.bool()
+    light_chain_mask = (token_type_ids == 1) & attention_mask.bool()
 
     if special_tokens_mask is not None:
         heavy_chain_mask = heavy_chain_mask & ~special_tokens_mask.bool()
@@ -329,7 +329,7 @@ def extract_region_masks(
     if needs_fwr:
         for b in range(batch_size):
             seq_cdr_mask = cdr_mask[b]
-            seq_chain_ids = chain_ids[b]
+            seq_chain_ids = token_type_ids[b]
             seq_attention = attention_mask[b].bool()
             seq_special = special_tokens_mask[b] if special_tokens_mask is not None else None
 

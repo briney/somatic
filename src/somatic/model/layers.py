@@ -170,7 +170,7 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         output_attentions: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
@@ -195,7 +195,7 @@ class TransformerBlock(nn.Module):
                 return torch_checkpoint.checkpoint(
                     self._forward_impl,
                     x,
-                    chain_ids,
+                    token_type_ids,
                     attention_mask,
                     output_attentions,
                     use_reentrant=False,
@@ -205,17 +205,17 @@ class TransformerBlock(nn.Module):
             return torch_checkpoint.checkpoint(
                 self._forward_impl,
                 x,
-                chain_ids,
+                token_type_ids,
                 attention_mask,
                 output_attentions,
                 use_reentrant=False,
             )
-        return self._forward_impl(x, chain_ids, attention_mask, output_attentions)
+        return self._forward_impl(x, token_type_ids, attention_mask, output_attentions)
 
     def _forward_impl(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         output_attentions: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
@@ -224,7 +224,7 @@ class TransformerBlock(nn.Module):
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model)
-            chain_ids: Chain identity tensor of shape (batch, seq_len)
+            token_type_ids: Chain identity tensor of shape (batch, seq_len)
             attention_mask: Optional padding mask of shape (batch, seq_len)
             output_attentions: If True, return attention weights
 
@@ -242,9 +242,11 @@ class TransformerBlock(nn.Module):
             x = self.attention_pre_norm(x)
 
         if output_attentions:
-            attn_out, attn_weights = self.attention(x, chain_ids, attention_mask, need_weights=True)
+            attn_out, attn_weights = self.attention(
+                x, token_type_ids, attention_mask, need_weights=True
+            )
         else:
-            attn_out = self.attention(x, chain_ids, attention_mask, need_weights=False)
+            attn_out = self.attention(x, token_type_ids, attention_mask, need_weights=False)
 
         x = residual + self.dropout(attn_out)
 
@@ -348,7 +350,7 @@ class TransformerEncoder(nn.Module):
     def forward(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
@@ -362,7 +364,7 @@ class TransformerEncoder(nn.Module):
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model)
-            chain_ids: Chain identity tensor of shape (batch, seq_len)
+            token_type_ids: Chain identity tensor of shape (batch, seq_len)
             attention_mask: Optional padding mask of shape (batch, seq_len)
             output_hidden_states: If True, return all hidden states (including input)
             output_attentions: If True, return attention weights from all layers
@@ -388,10 +390,10 @@ class TransformerEncoder(nn.Module):
 
         for layer in self.layers:
             if output_attentions:
-                x, attn_weights = layer(x, chain_ids, attention_mask, output_attentions=True)
+                x, attn_weights = layer(x, token_type_ids, attention_mask, output_attentions=True)
                 all_attentions = all_attentions + (attn_weights,)
             else:
-                x = layer(x, chain_ids, attention_mask, output_attentions=False)
+                x = layer(x, token_type_ids, attention_mask, output_attentions=False)
 
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (x,)

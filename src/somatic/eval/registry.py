@@ -208,7 +208,7 @@ def build_metrics(
         # Resolve dynamic num_layers for p_at_l metric (null -> 10% of encoder layers)
         if name == "p_at_l" and init_kwargs.get("num_layers") is None:
             model_cfg = cfg.get("model", {})
-            n_layers = model_cfg.get("n_layers", 16)
+            n_layers = model_cfg.get("num_hidden_layers", 16)
             init_kwargs["num_layers"] = max(1, math.ceil(n_layers * 0.1))
 
         # Instantiate the metric

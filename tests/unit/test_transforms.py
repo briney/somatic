@@ -1,7 +1,5 @@
 """Tests for data transforms."""
 
-import pytest
-
 from somatic.data.transforms import Compose, RandomChainSwap, SequenceTruncation
 
 
@@ -97,10 +95,12 @@ class TestSequenceTruncation:
 
 class TestCompose:
     def test_compose_multiple(self):
-        transform = Compose([
-            RandomChainSwap(p=1.0),
-            SequenceTruncation(max_length=100),
-        ])
+        transform = Compose(
+            [
+                RandomChainSwap(p=1.0),
+                SequenceTruncation(max_length=100),
+            ]
+        )
 
         example = {
             "heavy_chain": "HEAVY",

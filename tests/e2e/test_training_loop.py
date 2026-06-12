@@ -1,20 +1,15 @@
 """End-to-end tests for the training loop."""
 
-import tempfile
-from pathlib import Path
-
 import pandas as pd
 import pytest
 import torch
 
 from somatic.data import create_dataloader
 from somatic.masking import UniformMasker
-from somatic.model import SomaticConfig, SomaticModel
+from somatic.model import SomaticConfig, SomaticForMaskedLM
 from somatic.training import (
     CheckpointConfig,
     CheckpointManager,
-    TrainingConfig,
-    compute_masked_cross_entropy,
     create_optimizer,
     create_scheduler,
 )
@@ -49,15 +44,14 @@ def small_model():
     """Create a small model for testing."""
     config = SomaticConfig(
         vocab_size=32,
-        d_model=32,
-        n_layers=1,
-        n_heads=1,
-        max_seq_len=128,
-        dropout=0.0,
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        max_position_embeddings=128,
+        hidden_dropout=0.0,
         attention_dropout=0.0,
-        embedding_dropout=0.0,
     )
-    return SomaticModel(config)
+    return SomaticForMaskedLM(config)
 
 
 class TestMiniTrainingLoop:
@@ -82,31 +76,28 @@ class TestMiniTrainingLoop:
         losses = []
 
         # Train for a few epochs
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
                 # Masking
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
 
-                # Forward
+                # Forward (model computes masked CE loss from labels)
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
                 # Loss
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 # Backward
                 optimizer.zero_grad()
@@ -124,7 +115,7 @@ class TestMiniTrainingLoop:
         assert all(loss < 100 for loss in losses)  # Sanity check
 
     def test_checkpointing_saves_and_loads(self, training_data, small_model, tmp_path):
-        """Test that checkpointing works correctly."""
+        """Test that HF-directory checkpointing saves model weights + training state."""
         model = small_model
         optimizer = create_optimizer(model, lr=1e-3)
         scheduler = create_scheduler(optimizer, num_training_steps=100)
@@ -134,38 +125,39 @@ class TestMiniTrainingLoop:
             checkpoint_steps=5,
             keep_last_n=2,
         )
-        checkpoint_manager = CheckpointManager(
-            checkpoint_config, model, optimizer, scheduler
-        )
+        checkpoint_manager = CheckpointManager(checkpoint_config, model, optimizer, scheduler)
 
         # Modify model state
         for param in model.parameters():
             param.data.add_(0.1)
 
-        # Save checkpoint
-        checkpoint_manager.save(step=10, epoch=1, metrics={"loss": 0.5})
+        # Save checkpoint (writes an HF model directory + training_state.pt)
+        checkpoint_path = checkpoint_manager.save(step=10, epoch=1, metrics={"loss": 0.5})
 
-        # Verify checkpoint exists
-        checkpoint_path = tmp_path / "checkpoints" / "checkpoint_step_10.pt"
-        assert checkpoint_path.exists()
+        # Verify checkpoint directory and its contents exist
+        assert checkpoint_path == tmp_path / "checkpoints" / "checkpoint_step_10"
+        assert checkpoint_path.is_dir()
+        assert (checkpoint_path / "config.json").exists()
+        assert (checkpoint_path / "training_state.pt").exists()
 
-        # Create new model and load
-        new_model = SomaticModel(small_model.config)
+        # Reload the model from the HF directory (clean break: no combined .pt).
+        new_model = SomaticForMaskedLM.from_pretrained(str(checkpoint_path))
         new_optimizer = create_optimizer(new_model, lr=1e-3)
         new_scheduler = create_scheduler(new_optimizer, num_training_steps=100)
         new_checkpoint_manager = CheckpointManager(
             checkpoint_config, new_model, new_optimizer, new_scheduler
         )
 
-        state = new_checkpoint_manager.load(str(checkpoint_path))
+        # Restore optimizer/scheduler/RNG + step/epoch/metrics from training_state.pt.
+        state = new_checkpoint_manager.load_training_state(str(checkpoint_path))
 
         assert state["step"] == 10
         assert state["epoch"] == 1
         assert state["metrics"]["loss"] == 0.5
 
         # Verify model weights match
-        for (name1, param1), (name2, param2) in zip(
-            model.named_parameters(), new_model.named_parameters()
+        for (name1, param1), (_name2, param2) in zip(
+            model.named_parameters(), new_model.named_parameters(), strict=True
         ):
             assert torch.allclose(param1, param2), f"Mismatch in {name1}"
 
@@ -183,7 +175,7 @@ class TestMiniTrainingLoop:
         # Track learning rates
         lrs = []
 
-        for step in range(50):
+        for _step in range(50):
             lrs.append(optimizer.param_groups[0]["lr"])
             scheduler.step()
 
@@ -204,25 +196,25 @@ class TestModelSaveLoad:
             for param in model.parameters():
                 param.add_(torch.randn_like(param) * 0.1)
 
-        # Save
-        save_path = tmp_path / "model.pt"
+        # Save (HuggingFace directory format)
+        save_path = tmp_path / "model"
         model.save_pretrained(str(save_path))
 
-        assert save_path.exists()
+        assert (save_path / "config.json").exists()
 
         # Load
-        loaded_model = SomaticModel.from_pretrained(str(save_path))
+        loaded_model = SomaticForMaskedLM.from_pretrained(str(save_path))
 
         # Compare configs
-        assert loaded_model.config.d_model == model.config.d_model
-        assert loaded_model.config.n_layers == model.config.n_layers
+        assert loaded_model.config.hidden_size == model.config.hidden_size
+        assert loaded_model.config.num_hidden_layers == model.config.num_hidden_layers
 
         # Compare weights
         model.eval()
         loaded_model.eval()
 
-        for (name1, param1), (name2, param2) in zip(
-            model.named_parameters(), loaded_model.named_parameters()
+        for (name1, param1), (_name2, param2) in zip(
+            model.named_parameters(), loaded_model.named_parameters(), strict=True
         ):
             assert torch.allclose(param1, param2), f"Mismatch in {name1}"
 
@@ -233,24 +225,26 @@ class TestModelSaveLoad:
 
         # Create test input
         token_ids = torch.randint(4, 28, (2, 32))
-        chain_ids = torch.zeros_like(token_ids)
-        chain_ids[:, 16:] = 1
+        token_type_ids = torch.zeros_like(token_ids)
+        token_type_ids[:, 16:] = 1
         attention_mask = torch.ones_like(token_ids)
 
         # Get original output
         with torch.no_grad():
-            original_output = model(token_ids, chain_ids, attention_mask)
+            original_output = model(
+                token_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
 
-        # Save and load
-        save_path = tmp_path / "model.pt"
+        # Save and load (HuggingFace directory format)
+        save_path = tmp_path / "model"
         model.save_pretrained(str(save_path))
-        loaded_model = SomaticModel.from_pretrained(str(save_path))
+        loaded_model = SomaticForMaskedLM.from_pretrained(str(save_path))
         loaded_model.eval()
 
         # Get loaded output
         with torch.no_grad():
-            loaded_output = loaded_model(token_ids, chain_ids, attention_mask)
+            loaded_output = loaded_model(
+                token_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
 
-        assert torch.allclose(
-            original_output["logits"], loaded_output["logits"], atol=1e-6
-        )
+        assert torch.allclose(original_output.logits, loaded_output.logits, atol=1e-6)

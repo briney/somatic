@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from somatic.model import SomaticConfig, SomaticModel
+from somatic.model import SomaticConfig, SomaticForMaskedLM
 from somatic.training import create_optimizer, create_scheduler, get_lr
 
 
@@ -12,12 +12,12 @@ def tiny_model():
     """Create a tiny model for optimizer tests."""
     config = SomaticConfig(
         vocab_size=32,
-        d_model=32,
-        n_layers=1,
-        n_heads=1,
-        max_seq_len=32,
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        max_position_embeddings=32,
     )
-    return SomaticModel(config)
+    return SomaticForMaskedLM(config)
 
 
 class TestCreateOptimizer:
@@ -51,10 +51,10 @@ class TestCreateOptimizer:
 
         # Create dummy input and compute loss
         x = torch.randint(0, 32, (1, 10))
-        chain_ids = torch.zeros(1, 10, dtype=torch.long)
+        token_type_ids = torch.zeros(1, 10, dtype=torch.long)
 
-        output = tiny_model(x, chain_ids)
-        loss = output["logits"].sum()
+        output = tiny_model(x, token_type_ids=token_type_ids)
+        loss = output.logits.sum()
 
         # Take optimization step
         optimizer.zero_grad()
@@ -144,7 +144,6 @@ class TestCreateScheduler:
         assert mid_lr < base_lr
         assert mid_lr > expected_min
 
-
     def test_warmup_equals_training_steps(self, tiny_model):
         """Test that scheduler doesn't crash when warmup_steps == num_training_steps."""
         optimizer = create_optimizer(tiny_model)
@@ -175,7 +174,6 @@ class TestCreateScheduler:
         # Run through all steps - should not crash
         for _ in range(100):
             scheduler.step()
-
 
     def test_linear_decay_reaches_min_at_correct_step(self, tiny_model):
         """Verify linear decay reaches min_lr_ratio at exactly num_training_steps."""

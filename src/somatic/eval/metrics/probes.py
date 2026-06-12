@@ -12,7 +12,7 @@ from ..base import MetricBase
 from ..registry import register_metric
 
 if TYPE_CHECKING:
-    from ...model.transformer import ModelOutput
+    from transformers.modeling_outputs import MaskedLMOutput
 
 
 class ProbeMetricBase(MetricBase):
@@ -23,6 +23,9 @@ class ProbeMetricBase(MetricBase):
     some target property. The classifier is trained during the accumulation
     phase and evaluated in the compute phase.
     """
+
+    # Probes read the final-layer hidden state, so the evaluator must request it.
+    needs_hidden_states: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -49,13 +52,13 @@ class ProbeMetricBase(MetricBase):
     @abstractmethod
     def extract_features(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract features from model outputs.
 
         Args:
-            outputs: Model outputs dictionary.
+            outputs: Model outputs (``hidden_states`` is the per-layer tuple).
             batch: Input batch dictionary.
 
         Returns:
@@ -80,16 +83,16 @@ class ProbeMetricBase(MetricBase):
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate features and targets.
 
         Args:
             outputs: Model outputs.
             batch: Input batch.
-            mask_labels: Mask labels (may be unused).
+            labels: MLM labels (unused by probes).
         """
         if len(self._features) >= self.n_train:
             return
@@ -204,25 +207,26 @@ class ChainProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract pooled embeddings per chain.
 
         Returns features of shape (batch * 2, d_model) for heavy and light chains.
         """
-        hidden_states = outputs.get("hidden_states")
-        chain_ids = batch.get("chain_ids")
+        hidden_states = outputs.hidden_states
+        token_type_ids = batch.get("token_type_ids")
         attention_mask = batch.get("attention_mask")
 
-        if hidden_states is None or chain_ids is None:
+        if not hidden_states or token_type_ids is None:
             return None
 
-        batch_size, seq_len, d_model = hidden_states.shape
+        hidden = hidden_states[-1]  # final-layer representation (B, S, D)
+        batch_size, seq_len, d_model = hidden.shape
         features = []
 
         for chain_id in [0, 1]:  # 0 = heavy, 1 = light
-            chain_mask = chain_ids == chain_id
+            chain_mask = token_type_ids == chain_id
             if attention_mask is not None:
                 chain_mask = chain_mask & attention_mask.bool()
 
@@ -231,7 +235,7 @@ class ChainProbeMetric(ProbeMetricBase):
                 if mask.sum() == 0:
                     continue
 
-                chain_embeds = hidden_states[b, mask]
+                chain_embeds = hidden[b, mask]
 
                 if self.pool_strategy == "mean":
                     pooled = chain_embeds.mean(dim=0)
@@ -254,17 +258,17 @@ class ChainProbeMetric(ProbeMetricBase):
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract chain labels (0 = heavy, 1 = light)."""
-        chain_ids = batch.get("chain_ids")
+        token_type_ids = batch.get("token_type_ids")
         attention_mask = batch.get("attention_mask")
 
-        if chain_ids is None:
+        if token_type_ids is None:
             return None
 
-        batch_size = chain_ids.shape[0]
+        batch_size = token_type_ids.shape[0]
         labels = []
 
         for chain_id in [0, 1]:
-            chain_mask = chain_ids == chain_id
+            chain_mask = token_type_ids == chain_id
             if attention_mask is not None:
                 chain_mask = chain_mask & attention_mask.bool()
 
@@ -308,17 +312,18 @@ class PositionProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract embeddings at sampled positions."""
-        hidden_states = outputs.get("hidden_states")
+        hidden_states = outputs.hidden_states
         attention_mask = batch.get("attention_mask")
 
-        if hidden_states is None or attention_mask is None:
+        if not hidden_states or attention_mask is None:
             return None
 
-        batch_size, seq_len, d_model = hidden_states.shape
+        hidden = hidden_states[-1]  # final-layer representation (B, S, D)
+        batch_size, seq_len, d_model = hidden.shape
         features = []
 
         for b in range(batch_size):
@@ -331,7 +336,7 @@ class PositionProbeMetric(ProbeMetricBase):
             indices = indices.clamp(0, valid_len - 1)
 
             for idx in indices:
-                features.append(hidden_states[b, idx])
+                features.append(hidden[b, idx])
 
         if not features:
             return None
@@ -397,18 +402,19 @@ class CDRProbeMetric(ProbeMetricBase):
 
     def extract_features(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
     ) -> Tensor | None:
         """Extract embeddings at sampled positions."""
-        hidden_states = outputs.get("hidden_states")
+        hidden_states = outputs.hidden_states
         attention_mask = batch.get("attention_mask")
         cdr_mask = batch.get("cdr_mask")
 
-        if hidden_states is None or attention_mask is None or cdr_mask is None:
+        if not hidden_states or attention_mask is None or cdr_mask is None:
             return None
 
-        batch_size, seq_len, d_model = hidden_states.shape
+        hidden = hidden_states[-1]  # final-layer representation (B, S, D)
+        batch_size, seq_len, d_model = hidden.shape
         features = []
 
         for b in range(batch_size):
@@ -423,7 +429,7 @@ class CDRProbeMetric(ProbeMetricBase):
             selected_positions = valid_indices[sample_indices]
 
             for pos in selected_positions:
-                features.append(hidden_states[b, pos])
+                features.append(hidden[b, pos])
 
         if not features:
             return None

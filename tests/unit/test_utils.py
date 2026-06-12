@@ -1,7 +1,6 @@
 """Tests for utility functions."""
 
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 import torch

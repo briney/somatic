@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 
 if TYPE_CHECKING:
-    from ..model.transformer import ModelOutput
+    from transformers.modeling_outputs import MaskedLMOutput
 
 
 @runtime_checkable
@@ -22,31 +22,35 @@ class Metric(Protocol):
         name: Unique identifier for the metric (used in logging).
         requires_coords: Whether this metric requires coordinate data.
         needs_attentions: Whether this metric needs attention weights.
+        needs_hidden_states: Whether this metric needs per-layer hidden states.
     """
 
     name: ClassVar[str]
     requires_coords: ClassVar[bool]
     needs_attentions: ClassVar[bool]
+    needs_hidden_states: ClassVar[bool]
 
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate metric values from a single batch.
 
         Args:
-            outputs: Model outputs dictionary containing:
-                - "logits": Output logits (batch, seq_len, vocab_size)
-                - "hidden_states": Final hidden states (batch, seq_len, d_model)
-                - "attentions": (optional) Tuple of attention tensors per layer
+            outputs: Model outputs containing:
+                - ``logits``: Output logits (batch, seq_len, vocab_size)
+                - ``hidden_states``: (optional) per-layer hidden-state tuple
+                  (requested via ``needs_hidden_states``); final layer is ``[-1]``
+                - ``attentions``: (optional) tuple of attention tensors per layer
             batch: Input batch dictionary containing:
-                - "token_ids": Original token IDs (batch, seq_len)
-                - "chain_ids": Chain identity (batch, seq_len)
+                - "input_ids": Original token IDs (batch, seq_len)
+                - "token_type_ids": Chain identity (batch, seq_len)
                 - "attention_mask": Padding mask (batch, seq_len)
                 - "coords": (optional) 3D coordinates (batch, seq_len, 3)
-            mask_labels: Mask indicating which tokens were masked (batch, seq_len).
+            labels: MLM labels (batch, seq_len) — original ids at masked positions,
+                ``-100`` elsewhere. The masked positions are ``labels != -100``.
         """
         ...
 
@@ -109,6 +113,7 @@ class MetricBase(ABC):
     name: ClassVar[str] = ""
     requires_coords: ClassVar[bool] = False
     needs_attentions: ClassVar[bool] = False
+    needs_hidden_states: ClassVar[bool] = False
 
     def __init__(self) -> None:
         """Initialize the metric with default accumulators."""
@@ -118,9 +123,9 @@ class MetricBase(ABC):
     @abstractmethod
     def update(
         self,
-        outputs: ModelOutput,
+        outputs: MaskedLMOutput,
         batch: dict[str, Tensor | None],
-        mask_labels: Tensor,
+        labels: Tensor,
     ) -> None:
         """Accumulate metric values from a single batch."""
         ...

@@ -1,10 +1,9 @@
 """Tests for batch collation."""
 
 import pytest
-import torch
 
 from somatic.data.collator import AntibodyCollator
-from somatic.tokenizer import tokenizer
+from somatic.model.tokenization_somatic import tokenizer
 
 
 class TestAntibodyCollator:
@@ -36,8 +35,8 @@ class TestAntibodyCollator:
     def test_output_keys(self, collator, sample_batch):
         result = collator(sample_batch)
 
-        assert "token_ids" in result
-        assert "chain_ids" in result
+        assert "input_ids" in result
+        assert "token_type_ids" in result
         assert "attention_mask" in result
         assert "special_tokens_mask" in result
 
@@ -46,28 +45,28 @@ class TestAntibodyCollator:
         batch_size = len(sample_batch)
 
         # Sequence length should be max of encoded lengths
-        seq_len = result["token_ids"].shape[1]
+        seq_len = result["input_ids"].shape[1]
 
-        assert result["token_ids"].shape == (batch_size, seq_len)
-        assert result["chain_ids"].shape == (batch_size, seq_len)
+        assert result["input_ids"].shape == (batch_size, seq_len)
+        assert result["token_type_ids"].shape == (batch_size, seq_len)
         assert result["attention_mask"].shape == (batch_size, seq_len)
 
     def test_cls_and_eos_tokens(self, collator, sample_batch):
         result = collator(sample_batch)
 
         # First token should be CLS
-        assert (result["token_ids"][:, 0] == tokenizer.cls_token_id).all()
+        assert (result["input_ids"][:, 0] == tokenizer.cls_token_id).all()
 
         # Should have EOS somewhere in the sequence
-        has_eos = (result["token_ids"] == tokenizer.eos_token_id).any(dim=1)
+        has_eos = (result["input_ids"] == tokenizer.eos_token_id).any(dim=1)
         assert has_eos.all()
 
     def test_chain_ids(self, collator, sample_batch):
         result = collator(sample_batch)
 
-        # Chain IDs should be 0 for heavy, 1 for light
+        # Token type IDs should be 0 for heavy, 1 for light
         # First token (CLS) should be chain 0
-        assert (result["chain_ids"][:, 0] == 0).all()
+        assert (result["token_type_ids"][:, 0] == 0).all()
 
     def test_attention_mask(self, collator, sample_batch):
         result = collator(sample_batch)
@@ -75,7 +74,7 @@ class TestAntibodyCollator:
         # Attention mask should be 1 for real tokens, 0 for padding
         for i in range(len(sample_batch)):
             # Find where padding starts
-            padding_start = (result["token_ids"][i] == tokenizer.pad_token_id).nonzero()
+            padding_start = (result["input_ids"][i] == tokenizer.pad_token_id).nonzero()
             if len(padding_start) > 0:
                 pad_idx = padding_start[0].item()
                 assert result["attention_mask"][i, :pad_idx].sum() == pad_idx
@@ -101,7 +100,7 @@ class TestAntibodyCollator:
         ]
 
         result = collator(batch)
-        assert result["token_ids"].shape[1] == 100
+        assert result["input_ids"].shape[1] == 100
 
     def test_with_cdr_masks(self):
         """Test collation with detailed CDR masks (0=FW, 1=CDR1, 2=CDR2, 3=CDR3)."""
@@ -120,7 +119,7 @@ class TestAntibodyCollator:
 
         result = collator(batch)
         assert result["cdr_mask"] is not None
-        assert result["cdr_mask"].shape == result["token_ids"].shape
+        assert result["cdr_mask"].shape == result["input_ids"].shape
         # Detailed values should be preserved
         cdr_values = result["cdr_mask"][0].tolist()
         assert 1 in cdr_values  # CDR1
@@ -142,4 +141,4 @@ class TestAntibodyCollator:
 
         result = collator(batch)
         # Should be truncated to max_length
-        assert result["token_ids"].shape[1] == 20
+        assert result["input_ids"].shape[1] == 20

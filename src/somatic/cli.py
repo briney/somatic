@@ -71,7 +71,7 @@ def train(
     "-c",
     type=click.Path(exists=True),
     required=True,
-    help="Model checkpoint",
+    help="Model checkpoint directory (HuggingFace format)",
 )
 @click.option("--input", "-i", type=click.Path(exists=True), required=True, help="Input file")
 @click.option("--output", "-o", type=click.Path(), required=True, help="Output file (.pt or .npy)")
@@ -96,9 +96,9 @@ def encode(
 
     Examples:
 
-        somatic encode -c checkpoints/best.pt -i data/seqs.csv -o embeddings.pt
+        somatic encode -c checkpoints/best -i data/seqs.csv -o embeddings.pt
 
-        somatic encode -c model.pt -i seqs.parquet -o emb.npy --pooling mean
+        somatic encode -c checkpoints/best -i seqs.parquet -o emb.npy --pooling mean
     """
     import numpy as np
     import pandas as pd
@@ -167,7 +167,7 @@ def model_size(
 
         somatic model-size model=small
 
-        somatic model-size model=large model.n_layers=32
+        somatic model-size model=large model.num_hidden_layers=32
     """
     import importlib.resources
     from contextlib import ExitStack
@@ -175,7 +175,8 @@ def model_size(
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
 
-    from .model import SomaticConfig, SomaticModel
+    from .model import SomaticModel
+    from .train import _build_model_config
 
     with ExitStack() as stack:
         # Handle default/bundled configs
@@ -210,31 +211,8 @@ def model_size(
 
         cfg = compose(config_name=config_name, overrides=list(overrides))
 
-    # Create model config
-    model_config = SomaticConfig(
-        vocab_size=cfg.model.vocab_size,
-        padding_idx=cfg.model.padding_idx,
-        d_model=cfg.model.d_model,
-        n_layers=cfg.model.n_layers,
-        n_heads=cfg.model.n_heads,
-        d_ffn=cfg.model.d_ffn,
-        ffn_multiplier=cfg.model.ffn_multiplier,
-        max_seq_len=cfg.model.max_seq_len,
-        rope_fraction=cfg.model.rope_fraction,
-        dropout=cfg.model.dropout,
-        attention_dropout=cfg.model.attention_dropout,
-        embedding_dropout=cfg.model.embedding_dropout,
-        use_chain_aware_attention=cfg.model.use_chain_aware_attention,
-        chain_aware_projection_mode=cfg.model.get("chain_aware_projection_mode", "separate"),
-        norm_type=cfg.model.norm_type,
-        pre_norm=cfg.model.pre_norm,
-        post_norm=cfg.model.post_norm,
-        qk_norm=cfg.model.qk_norm,
-        layer_norm_eps=cfg.model.layer_norm_eps,
-        hybrid_norm=cfg.model.hybrid_norm,
-    )
-
-    # Create model and get parameter count
+    # Create model config and get parameter count
+    model_config = _build_model_config(cfg.model)
     model = SomaticModel(model_config)
     num_params = model.get_num_params()
 

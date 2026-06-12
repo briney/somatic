@@ -79,8 +79,8 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 
 ### Model Sizes
 
-| Variant | `d_model` | `n_layers` | `n_heads` | Parameters |
-|---------|-----------|------------|-----------|------------|
+| Variant | `hidden_size` | `num_hidden_layers` | `num_attention_heads` | Parameters |
+|---------|---------------|---------------------|-----------------------|------------|
 | `small` | 256 | 24 | 4 | ~19M (24M with chain-aware attention) |
 | `base` | 384 | 56 | 6 | ~99M (124M with chain-aware attention) |
 | `large` | 512 | 128 | 8 | ~411M (512M with chain-aware attention) |
@@ -90,23 +90,22 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `vocab_size` | int | `32` | Token vocabulary size |
-| `padding_idx` | int | `1` | Padding token index |
-| `d_model` | int | varies | Embedding/hidden dimension |
-| `n_layers` | int | varies | Number of transformer layers |
-| `n_heads` | int | varies | Number of attention heads |
-| `d_ffn` | int | `null` | FFN intermediate dimension (auto-computed if null) |
-| `ffn_multiplier` | float | `null` | FFN size multiplier (alternative to `d_ffn`) |
-| `max_seq_len` | int | `320` | Maximum sequence length |
-| `dropout` | float | `0.1` | General dropout rate |
+| `pad_token_id` | int | `1` | Padding token index |
+| `hidden_size` | int | varies | Embedding/hidden dimension |
+| `num_hidden_layers` | int | varies | Number of transformer layers |
+| `num_attention_heads` | int | varies | Number of attention heads |
+| `intermediate_size` | int | `null` | FFN intermediate dimension (auto-computed if null) |
+| `ffn_multiplier` | float | `null` | FFN size multiplier (alternative to `intermediate_size`) |
+| `max_position_embeddings` | int | `320` | Maximum sequence length |
+| `hidden_dropout` | float | `0.1` | Hidden/embedding dropout rate |
 | `attention_dropout` | float | `0.1` | Attention-specific dropout |
-| `embedding_dropout` | float | `0.1` | Embedding layer dropout |
 | `use_chain_aware_attention` | bool | `true` | Enable chain-aware (MINT-style) attention |
 | `chain_aware_projection_mode` | string | `separate` | Chain-aware projection variant: `separate` (Q/K/V per self/cross path) or `shared` (single Q/K/V). Ignored when `use_chain_aware_attention=false`. |
 | `norm_type` | string | `layernorm` | Normalization type: `layernorm` \| `rmsnorm` |
 | `pre_norm` | bool | `true` | Use pre-normalization (recommended) |
 | `post_norm` | bool | `false` | Use post-normalization |
 | `qk_norm` | string | `none` | QK normalization: `none` \| `norm` \| `learned_scale` |
-| `layer_norm_eps` | float | `1e-6` | LayerNorm epsilon value |
+| `norm_eps` | float | `1e-6` | Normalization epsilon value |
 
 ### Usage Examples
 
@@ -115,7 +114,7 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 somatic train model=small data.train=/path/to/data.csv
 
 # Override model parameters
-somatic train model.d_model=512 model.n_layers=32
+somatic train model.hidden_size=512 model.num_hidden_layers=32
 
 # Disable chain-aware attention
 somatic train model.use_chain_aware_attention=false

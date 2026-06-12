@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from somatic.masking import InformationWeightedMasker, UniformMasker
-from somatic.tokenizer import tokenizer
+from somatic.model.tokenization_somatic import tokenizer
 
 
 class TestUniformMasker:
@@ -17,20 +17,20 @@ class TestUniformMasker:
         token_ids = torch.randint(4, 28, (batch_size, seq_len))
         attention_mask = torch.ones(batch_size, seq_len)
 
-        masked_ids, mask_labels = masker.apply_mask(token_ids, attention_mask)
+        masked_ids, labels = masker.apply_mask(token_ids, attention_mask)
 
         assert masked_ids.shape == token_ids.shape
-        assert mask_labels.shape == token_ids.shape
+        assert labels.shape == token_ids.shape
 
     def test_masked_positions_have_mask_token(self, masker):
         batch_size, seq_len = 2, 32
         token_ids = torch.randint(4, 28, (batch_size, seq_len))
         attention_mask = torch.ones(batch_size, seq_len)
 
-        masked_ids, mask_labels = masker.apply_mask(token_ids, attention_mask)
+        masked_ids, labels = masker.apply_mask(token_ids, attention_mask)
 
-        # Where mask_labels is True, masked_ids should be MASK_IDX
-        assert (masked_ids[mask_labels] == tokenizer.mask_token_id).all()
+        # At masked positions (labels != -100), masked_ids should be MASK_IDX
+        assert (masked_ids[labels != -100] == tokenizer.mask_token_id).all()
 
     def test_respects_attention_mask(self, masker):
         batch_size, seq_len = 2, 32
@@ -38,10 +38,10 @@ class TestUniformMasker:
         attention_mask = torch.ones(batch_size, seq_len)
         attention_mask[:, -10:] = 0  # Last 10 positions are padding
 
-        _, mask_labels = masker.apply_mask(token_ids, attention_mask)
+        _, labels = masker.apply_mask(token_ids, attention_mask)
 
         # Padding positions should not be masked
-        assert not mask_labels[:, -10:].any()
+        assert not (labels[:, -10:] != -100).any()
 
     def test_respects_special_tokens_mask(self, masker):
         batch_size, seq_len = 2, 32
@@ -53,13 +53,13 @@ class TestUniformMasker:
         special_tokens_mask[:, 0] = True
         special_tokens_mask[:, -1] = True
 
-        _, mask_labels = masker.apply_mask(
+        _, labels = masker.apply_mask(
             token_ids, attention_mask, special_tokens_mask=special_tokens_mask
         )
 
         # Special token positions should not be masked
-        assert not mask_labels[:, 0].any()
-        assert not mask_labels[:, -1].any()
+        assert not (labels[:, 0] != -100).any()
+        assert not (labels[:, -1] != -100).any()
 
     def test_mask_rate_validation(self):
         with pytest.raises(ValueError):
@@ -86,10 +86,10 @@ class TestInformationWeightedMasker:
         token_ids = torch.randint(4, 28, (batch_size, seq_len))
         attention_mask = torch.ones(batch_size, seq_len)
 
-        masked_ids, mask_labels = masker.apply_mask(token_ids, attention_mask)
+        masked_ids, labels = masker.apply_mask(token_ids, attention_mask)
 
         assert masked_ids.shape == token_ids.shape
-        assert mask_labels.shape == token_ids.shape
+        assert labels.shape == token_ids.shape
 
     def test_compute_weights_uniform(self, masker):
         batch_size, seq_len = 2, 10
@@ -221,11 +221,11 @@ class TestInformationWeightedMasker:
         special_tokens_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
         special_tokens_mask[:, 0] = True
 
-        _, mask_labels = masker.apply_mask(
+        _, labels = masker.apply_mask(
             token_ids, attention_mask, special_tokens_mask=special_tokens_mask
         )
 
-        assert not mask_labels[:, 0].any()
+        assert not (labels[:, 0] != -100).any()
 
     def test_mask_count_matches_rate(self):
         masker = InformationWeightedMasker(mask_rate=0.5)
@@ -233,10 +233,10 @@ class TestInformationWeightedMasker:
         token_ids = torch.randint(4, 28, (batch_size, seq_len))
         attention_mask = torch.ones(batch_size, seq_len)
 
-        _, mask_labels = masker.apply_mask(token_ids, attention_mask)
+        _, labels = masker.apply_mask(token_ids, attention_mask)
 
         # Should mask approximately 50 tokens per sequence
-        mask_counts = mask_labels.sum(dim=-1)
+        mask_counts = (labels != -100).sum(dim=-1)
         assert (mask_counts >= 40).all()  # Allow some tolerance
         assert (mask_counts <= 60).all()
 
@@ -268,10 +268,8 @@ class TestGumbelSampling:
         # Run multiple times and check for variation
         results = []
         for _ in range(10):
-            _, mask_labels = masker.apply_mask(
-                token_ids, attention_mask, cdr_mask=cdr_mask
-            )
-            results.append(mask_labels.clone())
+            _, labels = masker.apply_mask(token_ids, attention_mask, cdr_mask=cdr_mask)
+            results.append((labels != -100).clone())
 
         # Not all results should be identical (stochastic)
         all_same = all(torch.equal(results[0], r) for r in results[1:])
@@ -295,14 +293,13 @@ class TestGumbelSampling:
         # Run multiple times - with ranked selection and high CDR weight,
         # the masked positions should always be within CDR region
         for _ in range(5):
-            _, mask_labels = masker.apply_mask(
-                token_ids, attention_mask, cdr_mask=cdr_mask
-            )
+            _, labels = masker.apply_mask(token_ids, attention_mask, cdr_mask=cdr_mask)
+            mask = labels != -100
             # All masked positions should be CDR positions (10-19)
-            cdr_region = mask_labels[:, 10:20]
+            cdr_region = mask[:, 10:20]
 
             # With ranked selection and high weight, all masks should be in CDR
-            total_masked = mask_labels.sum()
+            total_masked = mask.sum()
             cdr_masked = cdr_region.sum()
             assert cdr_masked == total_masked, (
                 "Ranked selection with high CDR weight should only mask CDR positions"
@@ -331,11 +328,10 @@ class TestGumbelSampling:
         num_trials = 50
 
         for _ in range(num_trials):
-            _, mask_labels = masker.apply_mask(
-                token_ids, attention_mask, cdr_mask=cdr_mask
-            )
-            cdr_masked = mask_labels[:, 10:20].sum().item()
-            fw_masked = mask_labels[:, :10].sum().item() + mask_labels[:, 20:].sum().item()
+            _, labels = masker.apply_mask(token_ids, attention_mask, cdr_mask=cdr_mask)
+            mask = labels != -100
+            cdr_masked = mask[:, 10:20].sum().item()
+            fw_masked = mask[:, :10].sum().item() + mask[:, 20:].sum().item()
             cdr_mask_counts.append(cdr_masked)
             fw_mask_counts.append(fw_masked)
 
@@ -368,11 +364,10 @@ class TestGumbelSampling:
         # Only 5 are CDR, so FW must be masked too
         fw_masked_ever = False
         for _ in range(20):
-            _, mask_labels = masker.apply_mask(
-                token_ids, attention_mask, cdr_mask=cdr_mask
-            )
+            _, labels = masker.apply_mask(token_ids, attention_mask, cdr_mask=cdr_mask)
+            mask = labels != -100
             # Check if any FW positions (not 10-14) were masked
-            fw_positions = torch.cat([mask_labels[:, :10], mask_labels[:, 15:]], dim=1)
+            fw_positions = torch.cat([mask[:, :10], mask[:, 15:]], dim=1)
             if fw_positions.any():
                 fw_masked_ever = True
                 break

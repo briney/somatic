@@ -15,6 +15,14 @@ class RotaryPositionEmbedding(nn.Module):
     in 2D subspaces, enabling relative position awareness without
     explicit position embeddings in the input.
 
+    The sin/cos tables are precomputed buffers up to ``max_seq_len`` and
+    auto-extended when a longer sequence arrives at inference. All three buffers
+    (``inv_freq``, ``cos_cached``, ``sin_cached``) are non-persistent: they are
+    derived from ``base``/``rotated_dim`` and never saved. Under HuggingFace's
+    meta-device fast init they re-materialize as uninitialized memory, so the
+    cache is flagged for rebuild on the first real forward (see
+    ``_maybe_build_cache``).
+
     Args:
         dim: Dimension of each attention head (must be even)
         max_seq_len: Maximum sequence length to precompute
@@ -54,25 +62,65 @@ class RotaryPositionEmbedding(nn.Module):
         self.rotated_dim = rotated_dim
 
         if rotated_dim == 0:
-            # NoPE: no cache needed, forward returns inputs unchanged.
+            # NoPE: forward returns inputs unchanged. Register empty buffers so
+            # attribute access stays valid regardless of config.
             self.register_buffer("inv_freq", torch.zeros(0), persistent=False)
-        else:
-            # Precompute frequency bands sized to rotated_dim.
-            inv_freq = 1.0 / (base ** (torch.arange(0, rotated_dim, 2).float() / rotated_dim))
-            self.register_buffer("inv_freq", inv_freq, persistent=False)
-            self._build_cache(max_seq_len)
+            self.register_buffer("cos_cached", torch.zeros(1, 1, max_seq_len, 0), persistent=False)
+            self.register_buffer("sin_cached", torch.zeros(1, 1, max_seq_len, 0), persistent=False)
+            self._cache_initialized = True
+            return
 
-    def _build_cache(self, seq_len: int) -> None:
-        """Build sin/cos cache for given sequence length."""
-        positions = torch.arange(seq_len, device=self.inv_freq.device)
-        freqs = torch.outer(positions, self.inv_freq)
+        inv_freq = self._compute_inv_freq(device=None)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        cos, sin = self._compute_cos_sin(max_seq_len, device=inv_freq.device)
+        self.register_buffer("cos_cached", cos, persistent=False)
+        self.register_buffer("sin_cached", sin, persistent=False)
+        # False under meta-device fast init (buffers are not real yet); the first
+        # real forward rebuilds them. A normal CPU/GPU construction is valid now.
+        self._cache_initialized = not self.cos_cached.is_meta
+
+    def _compute_inv_freq(self, device: torch.device | None) -> Tensor:
+        """Derive ``inv_freq`` from ``base``/``rotated_dim`` (plain attributes).
+
+        Recomputed rather than read from the buffer so a meta-device-corrupted
+        buffer can never leak into the rotation tables.
+        """
+        return 1.0 / (
+            self.base
+            ** (
+                torch.arange(0, self.rotated_dim, 2, dtype=torch.float32, device=device)
+                / self.rotated_dim
+            )
+        )
+
+    def _compute_cos_sin(self, seq_len: int, device: torch.device | None) -> tuple[Tensor, Tensor]:
+        """Compute cos/sin caches of shape ``(1, 1, seq_len, rotated_dim)``."""
+        inv_freq = self._compute_inv_freq(device=device)
+        positions = torch.arange(seq_len, dtype=torch.float32, device=device)
+        freqs = torch.outer(positions, inv_freq)
         emb = torch.cat([freqs, freqs], dim=-1)
+        cos = emb.cos().unsqueeze(0).unsqueeze(0)
+        sin = emb.sin().unsqueeze(0).unsqueeze(0)
+        return cos, sin
 
-        cos_cached = emb.cos().unsqueeze(0).unsqueeze(0)
-        sin_cached = emb.sin().unsqueeze(0).unsqueeze(0)
+    def _maybe_build_cache(self, seq_len: int, device: torch.device) -> None:
+        """Rebuild the cos/sin tables when needed.
 
-        self.register_buffer("cos_cached", cos_cached, persistent=False)
-        self.register_buffer("sin_cached", sin_cached, persistent=False)
+        Rebuilds when the cache has not been built on a real device (post
+        meta-init load), when ``seq_len`` exceeds the cached length, or when the
+        cache lives on a different device than the incoming tensors.
+        """
+        cached_len = self.cos_cached.shape[2]
+        same_device = self.cos_cached.device == device
+        if self._cache_initialized and seq_len <= cached_len and same_device:
+            return
+        new_len = max(seq_len, cached_len)
+        cos, sin = self._compute_cos_sin(new_len, device=device)
+        self.inv_freq = self._compute_inv_freq(device=device)
+        self.cos_cached = cos
+        self.sin_cached = sin
+        self.max_seq_len = new_len
+        self._cache_initialized = True
 
     def _rotate_half(self, x: Tensor) -> Tensor:
         """Rotate half the hidden dims of the input."""
@@ -101,10 +149,7 @@ class RotaryPositionEmbedding(nn.Module):
             return q, k
 
         seq_len = q.shape[2]
-
-        if seq_len > self.max_seq_len:
-            self._build_cache(seq_len)
-            self.max_seq_len = seq_len
+        self._maybe_build_cache(seq_len, device=q.device)
 
         if position_ids is None:
             cos = self.cos_cached[:, :, :seq_len, :]

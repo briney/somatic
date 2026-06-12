@@ -7,17 +7,14 @@ batches built by ``AntibodyCollator``.
 
 from __future__ import annotations
 
-import pytest
 import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from somatic.data.collator import AntibodyCollator
 from somatic.eval import Evaluator
 from somatic.eval.cross_chain_config import CrossChainEvalConfig
 from somatic.eval.cross_chain_eval import run_cross_chain_eval
-from somatic.tokenizer import tokenizer
-
+from somatic.model.tokenization_somatic import tokenizer
 
 HEAVY_SEQS = [
     "EVQLVESGGGLVQPGRSLRLSCAASGFTFSDYAMHW",
@@ -40,16 +37,16 @@ def _build_paired_samples(n: int) -> list[dict]:
         heavy = HEAVY_SEQS[i % len(HEAVY_SEQS)]
         light = LIGHT_SEQS[i % len(LIGHT_SEQS)]
         encoded = tokenizer.encode_paired(heavy, light)
-        token_ids = torch.tensor(encoded["input_ids"], dtype=torch.long)
-        chain_ids = torch.tensor(encoded["chain_ids"], dtype=torch.long)
+        input_ids = torch.tensor(encoded["input_ids"], dtype=torch.long)
+        token_type_ids = torch.tensor(encoded["token_type_ids"], dtype=torch.long)
         attention_mask = torch.tensor(encoded["attention_mask"], dtype=torch.long)
-        special = torch.zeros_like(token_ids, dtype=torch.long)
+        special = torch.zeros_like(input_ids, dtype=torch.long)
         special[0] = 1  # CLS
         special[-1] = 1  # EOS
         samples.append(
             {
-                "token_ids": token_ids,
-                "chain_ids": chain_ids,
+                "input_ids": input_ids,
+                "token_type_ids": token_type_ids,
                 "attention_mask": attention_mask,
                 "special_tokens_mask": special,
             }
@@ -61,9 +58,9 @@ def _make_loader(small_model, batch_size: int = 4, n: int = 8) -> DataLoader:
     samples = _build_paired_samples(n)
 
     def collate(batch):
-        max_len = max(s["token_ids"].numel() for s in batch)
+        max_len = max(s["input_ids"].numel() for s in batch)
         out = {}
-        for key in ("token_ids", "chain_ids", "attention_mask", "special_tokens_mask"):
+        for key in ("input_ids", "token_type_ids", "attention_mask", "special_tokens_mask"):
             stacked = torch.zeros(len(batch), max_len, dtype=batch[0][key].dtype)
             for i, s in enumerate(batch):
                 t = s[key]
@@ -106,7 +103,7 @@ class TestRunCrossChainEval:
 
 
 class TestEvaluatorIntegration:
-    def _make_cfg(self, *, enabled: bool) -> "OmegaConf":
+    def _make_cfg(self, *, enabled: bool) -> OmegaConf:
         # Note: evaluate() returns early if no main-eval metrics are configured,
         # so we enable masked_accuracy to keep the path live. The cross-chain
         # block runs after the main-metric loop regardless.

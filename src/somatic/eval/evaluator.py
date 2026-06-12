@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from omegaconf import DictConfig
     from torch.utils.data import DataLoader
 
-    from ..model import SomaticModel
+    from ..model import SomaticForMaskedLM
     from .base import Metric
 
 
@@ -45,7 +45,7 @@ class Evaluator:
     def __init__(
         self,
         cfg: DictConfig,
-        model: SomaticModel,
+        model: SomaticForMaskedLM,
         accelerator: Accelerator | None = None,
     ) -> None:
         """Initialize the evaluator.
@@ -66,8 +66,9 @@ class Evaluator:
         # Cache for metrics per eval dataset
         self._metrics_cache: dict[str, list[Metric]] = {}
 
-        # Cache for whether attention weights are needed per eval dataset
+        # Cache for whether attention weights / hidden states are needed per dataset
         self._needs_attentions_cache: dict[str, bool] = {}
+        self._needs_hidden_states_cache: dict[str, bool] = {}
 
         # Initialize evaluation masker from config (if configured)
         self.eval_masker = self._build_eval_masker()
@@ -122,6 +123,22 @@ class Evaluator:
                 getattr(m, "needs_attentions", False) for m in metrics
             )
         return self._needs_attentions_cache[eval_name]
+
+    def _needs_hidden_states(self, eval_name: str) -> bool:
+        """Check if any metrics need per-layer hidden states.
+
+        Args:
+            eval_name: Name of the evaluation dataset.
+
+        Returns:
+            True if any metric requires hidden states.
+        """
+        if eval_name not in self._needs_hidden_states_cache:
+            metrics = self._get_metrics(eval_name)
+            self._needs_hidden_states_cache[eval_name] = any(
+                getattr(m, "needs_hidden_states", False) for m in metrics
+            )
+        return self._needs_hidden_states_cache[eval_name]
 
     def _gather_metric_states(self, metrics: list[Metric]) -> None:
         """Aggregate metric states across distributed processes.
@@ -191,8 +208,9 @@ class Evaluator:
         for metric in metrics:
             metric.reset()
 
-        # Check if any metrics need attention weights
+        # Check if any metrics need attention weights / hidden states
         needs_attentions = self._needs_attentions(eval_name)
+        needs_hidden_states = self._needs_hidden_states(eval_name)
 
         self.model.eval()
         device = _get_model_device(self.model, self.accelerator)
@@ -224,44 +242,45 @@ class Evaluator:
                         for k, v in batch.items()
                     }
 
-                # Create mask labels for evaluation
+                # Build masked inputs + MLM labels for evaluation.
                 # Priority: 1) eval_masker (controlled), 2) passed masker, 3) fallback
                 if self.eval_masker is not None:
                     # Use configured eval masker with seeded generator
-                    masked_ids, mask_labels = self.eval_masker.apply_mask(
+                    masked_input_ids, labels = self.eval_masker.apply_mask(
                         batch=batch,
                         generator=generator,
                     )
                 elif masker is not None:
-                    # Legacy: use passed masker
-                    batch_size = batch["token_ids"].shape[0]
-                    timesteps = masker.noise_schedule.sample_timesteps(batch_size, device)
-                    masked_ids, mask_labels = masker.apply_mask(
-                        token_ids=batch["token_ids"],
-                        timesteps=timesteps,
+                    # Use the passed masker (e.g. the trainer's uniform masker)
+                    masked_input_ids, labels = masker.apply_mask(
+                        input_ids=batch["input_ids"],
                         attention_mask=batch["attention_mask"],
                         special_tokens_mask=batch.get("special_tokens_mask"),
+                        generator=generator,
                     )
                 else:
                     # Default: random 15% masking for eval
-                    mask_labels = self._create_eval_mask(batch, device)
-                    masked_ids = batch["token_ids"].clone()
-                    from ..tokenizer import tokenizer
+                    mask = self._create_eval_mask(batch, device).bool()
+                    from ..model.tokenization_somatic import tokenizer
 
-                    masked_ids[mask_labels.bool()] = tokenizer.mask_token_id
+                    masked_input_ids = batch["input_ids"].clone()
+                    masked_input_ids[mask] = tokenizer.mask_token_id
+                    labels = batch["input_ids"].clone()
+                    labels[~mask] = -100
 
                 # Forward pass
                 outputs = self.model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_input_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
                     output_attentions=needs_attentions,
+                    output_hidden_states=needs_hidden_states,
                 )
 
                 # Update all metrics
                 for metric in metrics:
                     try:
-                        metric.update(outputs, batch, mask_labels)
+                        metric.update(outputs, batch, labels)
                     except Exception as e:
                         warnings.warn(f"Metric '{metric.name}' update failed: {e}", stacklevel=2)
 
@@ -329,12 +348,12 @@ class Evaluator:
         Returns:
             Binary mask tensor (batch, seq_len).
         """
-        token_ids = batch["token_ids"]
+        input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         special_tokens_mask = batch.get("special_tokens_mask")
 
         # Random mask
-        rand = torch.rand_like(token_ids.float())
+        rand = torch.rand_like(input_ids.float())
         mask_labels = (rand < mask_ratio).long()
 
         # Don't mask padding
@@ -530,3 +549,4 @@ class Evaluator:
         """
         self._metrics_cache.clear()
         self._needs_attentions_cache.clear()
+        self._needs_hidden_states_cache.clear()

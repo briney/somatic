@@ -157,7 +157,7 @@ class MultiHeadAttention(BaseAttention):
     def forward(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         need_weights: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
@@ -166,7 +166,7 @@ class MultiHeadAttention(BaseAttention):
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model)
-            chain_ids: Chain identity tensor of shape (batch, seq_len) - ignored
+            token_type_ids: Chain identity tensor of shape (batch, seq_len) - ignored
             attention_mask: Optional padding mask of shape (batch, seq_len)
             need_weights: If True, return attention weights (disables SDPA)
 
@@ -233,10 +233,10 @@ class MultiHeadAttention(BaseAttention):
         return output
 
 
-def _create_chain_mask(chain_ids: Tensor) -> Tensor:
+def _create_chain_mask(token_type_ids: Tensor) -> Tensor:
     """Create intra-chain boolean mask of shape (batch, 1, seq_len, seq_len)."""
-    chain_i = chain_ids.unsqueeze(-1)
-    chain_j = chain_ids.unsqueeze(-2)
+    chain_i = token_type_ids.unsqueeze(-1)
+    chain_j = token_type_ids.unsqueeze(-2)
     return (chain_i == chain_j).unsqueeze(1)
 
 
@@ -318,22 +318,22 @@ class ChainAwareAttention(BaseAttention):
                 qk_norm, norm_type, n_heads, head_dim, layer_norm_eps
             )
 
-    def _create_chain_mask(self, chain_ids: Tensor) -> Tensor:
+    def _create_chain_mask(self, token_type_ids: Tensor) -> Tensor:
         """
         Create intra-chain boolean mask.
 
         Args:
-            chain_ids: Chain identity tensor of shape (batch, seq_len)
+            token_type_ids: Chain identity tensor of shape (batch, seq_len)
 
         Returns:
             intra_mask: Boolean mask where True = same chain (batch, 1, seq_len, seq_len)
         """
-        return _create_chain_mask(chain_ids)
+        return _create_chain_mask(token_type_ids)
 
     def forward(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         need_weights: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
@@ -342,7 +342,7 @@ class ChainAwareAttention(BaseAttention):
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model)
-            chain_ids: Chain identity tensor of shape (batch, seq_len)
+            token_type_ids: Chain identity tensor of shape (batch, seq_len)
             attention_mask: Optional padding mask of shape (batch, seq_len)
             need_weights: If True, return attention weights
 
@@ -382,7 +382,7 @@ class ChainAwareAttention(BaseAttention):
         scores_cross = torch.matmul(q_cross, k_cross.transpose(-2, -1)) * self.scale
 
         # Create masks
-        intra_mask = self._create_chain_mask(chain_ids)
+        intra_mask = self._create_chain_mask(token_type_ids)
         padding_mask = self._create_padding_mask(attention_mask, x.dtype)
 
         # Convert intra_mask to same dtype as input for torch.where and later multiplication
@@ -486,13 +486,13 @@ class SharedQKVChainAwareAttention(BaseAttention):
         self.k_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
         self.v_proj = nn.Linear(d_model, self.inner_dim, bias=bias)
 
-    def _create_chain_mask(self, chain_ids: Tensor) -> Tensor:
-        return _create_chain_mask(chain_ids)
+    def _create_chain_mask(self, token_type_ids: Tensor) -> Tensor:
+        return _create_chain_mask(token_type_ids)
 
     def forward(
         self,
         x: Tensor,
-        chain_ids: Tensor,
+        token_type_ids: Tensor,
         attention_mask: Tensor | None = None,
         need_weights: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
@@ -501,7 +501,7 @@ class SharedQKVChainAwareAttention(BaseAttention):
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model).
-            chain_ids: Chain identity tensor of shape (batch, seq_len).
+            token_type_ids: Chain identity tensor of shape (batch, seq_len).
             attention_mask: Optional padding mask of shape (batch, seq_len).
             need_weights: If True, also return merged attention weights.
 
@@ -530,7 +530,7 @@ class SharedQKVChainAwareAttention(BaseAttention):
         scores_intra = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
         scores_inter = torch.matmul(q_nope, k_nope.transpose(-2, -1)) * self.scale
 
-        intra_mask = self._create_chain_mask(chain_ids)
+        intra_mask = self._create_chain_mask(token_type_ids)
         merged_scores = torch.where(intra_mask, scores_intra, scores_inter)
 
         padding_mask = self._create_padding_mask(attention_mask, x.dtype)

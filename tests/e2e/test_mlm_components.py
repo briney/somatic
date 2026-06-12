@@ -12,8 +12,8 @@ import torch
 
 from somatic.data import create_dataloader
 from somatic.masking import InformationWeightedMasker, UniformMasker
-from somatic.model import SomaticConfig, SomaticModel
-from somatic.training import compute_masked_cross_entropy, create_optimizer
+from somatic.model import SomaticConfig, SomaticForMaskedLM
+from somatic.training import create_optimizer
 
 
 @pytest.fixture
@@ -52,13 +52,13 @@ class TestMaskerTypes:
         """Test training with UniformMasker reduces loss."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -73,28 +73,25 @@ class TestMaskerTypes:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -113,13 +110,13 @@ class TestMaskerTypes:
         """Test training with InformationWeightedMasker reduces loss."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -138,14 +135,14 @@ class TestMaskerTypes:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
                 # InformationWeightedMasker supports optional CDR/template masks
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     cdr_mask=None,  # No CDR annotation
                     non_templated_mask=None,
@@ -153,16 +150,13 @@ class TestMaskerTypes:
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -187,7 +181,7 @@ class TestMaskerTypes:
         )
 
         batch = next(iter(dataloader))
-        batch_size, seq_len = batch["token_ids"].shape
+        batch_size, seq_len = batch["input_ids"].shape
 
         masker = InformationWeightedMasker(
             mask_rate=0.15,
@@ -199,13 +193,14 @@ class TestMaskerTypes:
         cdr_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
         cdr_mask[:, 10:20] = True
 
-        masked_ids, mask_labels = masker.apply_mask(
-            token_ids=batch["token_ids"],
+        masked_ids, labels = masker.apply_mask(
+            input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             cdr_mask=cdr_mask,
             non_templated_mask=None,
             special_tokens_mask=batch["special_tokens_mask"],
         )
+        mask = labels != -100
 
         # Calculate mask proportion in CDR vs non-CDR regions
         special_mask = batch["special_tokens_mask"].bool()
@@ -214,10 +209,10 @@ class TestMaskerTypes:
         cdr_maskable = cdr_mask & maskable
         non_cdr_maskable = ~cdr_mask & maskable
 
-        cdr_masked = (mask_labels & cdr_maskable).sum().item()
+        cdr_masked = (mask & cdr_maskable).sum().item()
         cdr_total = cdr_maskable.sum().item()
 
-        non_cdr_masked = (mask_labels & non_cdr_maskable).sum().item()
+        non_cdr_masked = (mask & non_cdr_maskable).sum().item()
         non_cdr_total = non_cdr_maskable.sum().item()
 
         if cdr_total > 0 and non_cdr_total > 0:
@@ -241,7 +236,7 @@ class TestMaskerTypes:
         )
 
         batch = next(iter(dataloader))
-        batch_size, seq_len = batch["token_ids"].shape
+        batch_size, seq_len = batch["input_ids"].shape
 
         uniform_masker = UniformMasker(mask_rate=0.15)
         weighted_masker = InformationWeightedMasker(
@@ -263,25 +258,27 @@ class TestMaskerTypes:
 
         for _ in range(20):
             _, uniform_labels = uniform_masker.apply_mask(
-                token_ids=batch["token_ids"],
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 special_tokens_mask=batch["special_tokens_mask"],
             )
+            uniform_mask = uniform_labels != -100
 
             _, weighted_labels = weighted_masker.apply_mask(
-                token_ids=batch["token_ids"],
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 cdr_mask=cdr_mask,
                 non_templated_mask=non_templated_mask,
                 special_tokens_mask=batch["special_tokens_mask"],
             )
+            weighted_mask = weighted_labels != -100
 
             maskable = batch["attention_mask"].bool() & ~batch["special_tokens_mask"].bool()
             cdr_maskable = cdr_mask & maskable
 
             if cdr_maskable.sum() > 0:
-                uniform_cdr = (uniform_labels & cdr_maskable).sum().item()
-                weighted_cdr = (weighted_labels & cdr_maskable).sum().item()
+                uniform_cdr = (uniform_mask & cdr_maskable).sum().item()
+                weighted_cdr = (weighted_mask & cdr_maskable).sum().item()
 
                 uniform_cdr_fractions.append(uniform_cdr / cdr_maskable.sum().item())
                 weighted_cdr_fractions.append(weighted_cdr / cdr_maskable.sum().item())
@@ -309,14 +306,14 @@ class TestChainAwareAttention:
         """Test training with ChainAwareAttention enabled."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
             use_chain_aware_attention=True,  # Explicit
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -331,28 +328,25 @@ class TestChainAwareAttention:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -370,14 +364,14 @@ class TestChainAwareAttention:
         """Test training with standard MultiHeadAttention (chain-aware disabled)."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
             use_chain_aware_attention=False,  # Disable chain-aware attention
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -392,28 +386,25 @@ class TestChainAwareAttention:
         masker = UniformMasker(mask_rate=0.15)
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -431,86 +422,89 @@ class TestChainAwareAttention:
         """Verify both attention types produce same output shapes."""
         config_chain = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
             use_chain_aware_attention=True,
         )
         config_standard = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
             use_chain_aware_attention=False,
         )
 
-        model_chain = SomaticModel(config_chain)
-        model_standard = SomaticModel(config_standard)
+        model_chain = SomaticForMaskedLM(config_chain)
+        model_standard = SomaticForMaskedLM(config_standard)
 
         model_chain.eval()
         model_standard.eval()
 
         # Create test input
         batch_size, seq_len = 2, 32
-        token_ids = torch.randint(4, 28, (batch_size, seq_len))
-        token_ids[:, 0] = 0  # CLS
-        token_ids[:, -1] = 2  # EOS
+        input_ids = torch.randint(4, 28, (batch_size, seq_len))
+        input_ids[:, 0] = 0  # CLS
+        input_ids[:, -1] = 2  # EOS
 
-        # Chain IDs: first half heavy, second half light
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, seq_len // 2 :] = 1
+        # token_type_ids: first half heavy, second half light
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, seq_len // 2 :] = 1
 
         attention_mask = torch.ones(batch_size, seq_len)
 
         with torch.no_grad():
-            out_chain = model_chain(token_ids, chain_ids, attention_mask)
-            out_standard = model_standard(token_ids, chain_ids, attention_mask)
+            out_chain = model_chain(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
+            out_standard = model_standard(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
 
-        assert out_chain["logits"].shape == out_standard["logits"].shape
-        assert out_chain["hidden_states"].shape == out_standard["hidden_states"].shape
+        assert out_chain.logits.shape == out_standard.logits.shape
 
     def test_chain_aware_attention_patterns(self):
         """Verify ChainAwareAttention produces different patterns for intra/inter-chain."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
             use_chain_aware_attention=True,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.eval()
 
         batch_size, seq_len = 2, 32
-        token_ids = torch.randint(4, 28, (batch_size, seq_len))
-        token_ids[:, 0] = 0  # CLS
-        token_ids[:, -1] = 2  # EOS
+        input_ids = torch.randint(4, 28, (batch_size, seq_len))
+        input_ids[:, 0] = 0  # CLS
+        input_ids[:, -1] = 2  # EOS
 
         # Two chains: 0 for first half, 1 for second half
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, seq_len // 2 :] = 1
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, seq_len // 2 :] = 1
 
         attention_mask = torch.ones(batch_size, seq_len)
 
         with torch.no_grad():
             outputs = model(
-                token_ids,
-                chain_ids,
-                attention_mask,
+                input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
                 output_attentions=True,
             )
 
         # Should have attention weights for each layer
-        assert "attentions" in outputs
-        assert len(outputs["attentions"]) == 1  # 1 layer
+        assert outputs.attentions is not None
+        assert len(outputs.attentions) == 1  # 1 layer
 
-        attn_weights = outputs["attentions"][0]  # (batch, heads, seq, seq)
+        attn_weights = outputs.attentions[0]  # (batch, heads, seq, seq)
         assert attn_weights.shape == (batch_size, 2, seq_len, seq_len)
 
         # Attention weights should sum to 1 along last dimension
@@ -521,24 +515,24 @@ class TestChainAwareAttention:
         """Test that chain-aware attention models save and load correctly."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
             use_chain_aware_attention=True,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
 
         # Modify weights to make them unique
         with torch.no_grad():
             for param in model.parameters():
                 param.add_(torch.randn_like(param) * 0.1)
 
-        # Save and reload
-        save_path = tmp_path / "model.pt"
-        model.save_pretrained(str(save_path))
-        loaded_model = SomaticModel.from_pretrained(str(save_path))
+        # Save and reload (HF directory format)
+        save_dir = tmp_path / "model"
+        model.save_pretrained(str(save_dir))
+        loaded_model = SomaticForMaskedLM.from_pretrained(str(save_dir))
 
         # Verify config preserved
         assert loaded_model.config.use_chain_aware_attention is True
@@ -547,37 +541,41 @@ class TestChainAwareAttention:
         model.eval()
         loaded_model.eval()
 
-        token_ids = torch.randint(4, 28, (1, 16))
-        chain_ids = torch.zeros(1, 16, dtype=torch.long)
-        chain_ids[:, 8:] = 1
+        input_ids = torch.randint(4, 28, (1, 16))
+        token_type_ids = torch.zeros(1, 16, dtype=torch.long)
+        token_type_ids[:, 8:] = 1
         attention_mask = torch.ones(1, 16)
 
         with torch.no_grad():
-            out_orig = model(token_ids, chain_ids, attention_mask)
-            out_loaded = loaded_model(token_ids, chain_ids, attention_mask)
+            out_orig = model(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
+            out_loaded = loaded_model(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
 
-        assert torch.allclose(out_orig["logits"], out_loaded["logits"], atol=1e-6)
+        assert torch.allclose(out_orig.logits, out_loaded.logits, atol=1e-6)
 
     def test_standard_attention_save_load_roundtrip(self, tmp_path):
         """Test that standard attention models save and load correctly."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
             use_chain_aware_attention=False,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
 
         with torch.no_grad():
             for param in model.parameters():
                 param.add_(torch.randn_like(param) * 0.1)
 
-        save_path = tmp_path / "model.pt"
-        model.save_pretrained(str(save_path))
-        loaded_model = SomaticModel.from_pretrained(str(save_path))
+        save_dir = tmp_path / "model"
+        model.save_pretrained(str(save_dir))
+        loaded_model = SomaticForMaskedLM.from_pretrained(str(save_dir))
 
         # Verify config preserved
         assert loaded_model.config.use_chain_aware_attention is False
@@ -585,16 +583,20 @@ class TestChainAwareAttention:
         model.eval()
         loaded_model.eval()
 
-        token_ids = torch.randint(4, 28, (1, 16))
-        chain_ids = torch.zeros(1, 16, dtype=torch.long)
-        chain_ids[:, 8:] = 1
+        input_ids = torch.randint(4, 28, (1, 16))
+        token_type_ids = torch.zeros(1, 16, dtype=torch.long)
+        token_type_ids[:, 8:] = 1
         attention_mask = torch.ones(1, 16)
 
         with torch.no_grad():
-            out_orig = model(token_ids, chain_ids, attention_mask)
-            out_loaded = loaded_model(token_ids, chain_ids, attention_mask)
+            out_orig = model(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
+            out_loaded = loaded_model(
+                input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+            )
 
-        assert torch.allclose(out_orig["logits"], out_loaded["logits"], atol=1e-6)
+        assert torch.allclose(out_orig.logits, out_loaded.logits, atol=1e-6)
 
 
 # =============================================================================
@@ -610,14 +612,14 @@ class TestCombinedConfigurations:
         """Test training with both masker types and attention configurations."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
             use_chain_aware_attention=use_chain_aware,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -636,23 +638,20 @@ class TestCombinedConfigurations:
         num_batches = 0
 
         for batch in dataloader:
-            masked_ids, mask_labels = masker.apply_mask(
-                token_ids=batch["token_ids"],
+            masked_ids, labels = masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 special_tokens_mask=batch["special_tokens_mask"],
             )
 
             outputs = model(
-                token_ids=masked_ids,
-                chain_ids=batch["chain_ids"],
+                input_ids=masked_ids,
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
+                labels=labels,
             )
 
-            loss = compute_masked_cross_entropy(
-                logits=outputs["logits"],
-                targets=batch["token_ids"],
-                mask_labels=mask_labels,
-            )
+            loss = outputs.loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -666,20 +665,18 @@ class TestCombinedConfigurations:
 
     @pytest.mark.parametrize("masker_type", ["uniform", "information_weighted"])
     @pytest.mark.parametrize("use_chain_aware", [True, False])
-    def test_all_masker_attention_combinations(
-        self, training_data, masker_type, use_chain_aware
-    ):
+    def test_all_masker_attention_combinations(self, training_data, masker_type, use_chain_aware):
         """Test training with all combinations of maskers and attention types."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
             use_chain_aware_attention=use_chain_aware,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -703,14 +700,14 @@ class TestCombinedConfigurations:
 
         for batch in dataloader:
             if masker_type == "uniform":
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
             else:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     cdr_mask=None,
                     non_templated_mask=None,
@@ -718,16 +715,13 @@ class TestCombinedConfigurations:
                 )
 
             outputs = model(
-                token_ids=masked_ids,
-                chain_ids=batch["chain_ids"],
+                input_ids=masked_ids,
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
+                labels=labels,
             )
 
-            loss = compute_masked_cross_entropy(
-                logits=outputs["logits"],
-                targets=batch["token_ids"],
-                mask_labels=mask_labels,
-            )
+            loss = outputs.loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -754,13 +748,13 @@ class TestSelectionMethods:
         """Test that multi-epoch training with sampled selection reduces loss."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -780,13 +774,13 @@ class TestSelectionMethods:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     cdr_mask=None,
                     non_templated_mask=None,
@@ -794,16 +788,13 @@ class TestSelectionMethods:
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -821,13 +812,13 @@ class TestSelectionMethods:
         """Test that multi-epoch training with ranked selection reduces loss."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -847,13 +838,13 @@ class TestSelectionMethods:
         )
 
         losses = []
-        for epoch in range(3):
+        for _epoch in range(3):
             epoch_loss = 0.0
             num_batches = 0
 
             for batch in dataloader:
-                masked_ids, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                masked_ids, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     cdr_mask=None,
                     non_templated_mask=None,
@@ -861,16 +852,13 @@ class TestSelectionMethods:
                 )
 
                 outputs = model(
-                    token_ids=masked_ids,
-                    chain_ids=batch["chain_ids"],
+                    input_ids=masked_ids,
+                    token_type_ids=batch["token_type_ids"],
                     attention_mask=batch["attention_mask"],
+                    labels=labels,
                 )
 
-                loss = compute_masked_cross_entropy(
-                    logits=outputs["logits"],
-                    targets=batch["token_ids"],
-                    mask_labels=mask_labels,
-                )
+                loss = outputs.loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -895,7 +883,7 @@ class TestSelectionMethods:
         )
 
         batch = next(iter(dataloader))
-        batch_size, seq_len = batch["token_ids"].shape
+        batch_size, seq_len = batch["input_ids"].shape
 
         masker = InformationWeightedMasker(
             mask_rate=0.15,
@@ -914,13 +902,14 @@ class TestSelectionMethods:
         num_trials = 10
 
         for _ in range(num_trials):
-            _, mask_labels = masker.apply_mask(
-                token_ids=batch["token_ids"],
+            _, labels = masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 cdr_mask=cdr_mask,
                 non_templated_mask=None,
                 special_tokens_mask=batch["special_tokens_mask"],
             )
+            mask = labels != -100
 
             # Count framework positions masked (not 10-14)
             special_mask = batch["special_tokens_mask"].bool()
@@ -928,7 +917,7 @@ class TestSelectionMethods:
             fw_maskable = maskable.clone()
             fw_maskable[:, 10:15] = False
 
-            fw_masked = (mask_labels & fw_maskable).sum().item()
+            fw_masked = (mask & fw_maskable).sum().item()
             fw_masked_total += fw_masked
 
         # Should have some framework positions masked across trials
@@ -945,7 +934,7 @@ class TestSelectionMethods:
         )
 
         batch = next(iter(dataloader))
-        batch_size, seq_len = batch["token_ids"].shape
+        batch_size, seq_len = batch["input_ids"].shape
 
         masker = InformationWeightedMasker(
             mask_rate=0.10,
@@ -958,21 +947,22 @@ class TestSelectionMethods:
         cdr_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
         cdr_mask[:, 10:25] = 1  # 15 CDR positions
 
-        _, mask_labels = masker.apply_mask(
-            token_ids=batch["token_ids"],
+        _, labels = masker.apply_mask(
+            input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             cdr_mask=cdr_mask,
             non_templated_mask=None,
             special_tokens_mask=batch["special_tokens_mask"],
         )
+        mask = labels != -100
 
         # Calculate what fraction of masked positions are CDR
         special_mask = batch["special_tokens_mask"].bool()
         maskable = batch["attention_mask"].bool() & ~special_mask
         cdr_maskable = (cdr_mask > 0) & maskable
 
-        cdr_masked = (mask_labels & cdr_maskable).sum().item()
-        total_masked = mask_labels.sum().item()
+        cdr_masked = (mask & cdr_maskable).sum().item()
+        total_masked = mask.sum().item()
 
         if total_masked > 0:
             cdr_fraction = cdr_masked / total_masked
@@ -995,13 +985,13 @@ class TestMaskRates:
         """Test that different mask rates produce valid training."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=32,
-            n_layers=1,
-            n_heads=1,
-            max_seq_len=128,
-            dropout=0.0,
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            max_position_embeddings=128,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.train()
 
         dataloader = create_dataloader(
@@ -1018,23 +1008,20 @@ class TestMaskRates:
         # Train for a few batches
         losses = []
         for batch in dataloader:
-            masked_ids, mask_labels = masker.apply_mask(
-                token_ids=batch["token_ids"],
+            masked_ids, labels = masker.apply_mask(
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 special_tokens_mask=batch["special_tokens_mask"],
             )
 
             outputs = model(
-                token_ids=masked_ids,
-                chain_ids=batch["chain_ids"],
+                input_ids=masked_ids,
+                token_type_ids=batch["token_type_ids"],
                 attention_mask=batch["attention_mask"],
+                labels=labels,
             )
 
-            loss = compute_masked_cross_entropy(
-                logits=outputs["logits"],
-                targets=batch["token_ids"],
-                mask_labels=mask_labels,
-            )
+            loss = outputs.loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -1067,16 +1054,17 @@ class TestMaskRates:
             total_maskable = 0
 
             for _ in range(10):
-                _, mask_labels = masker.apply_mask(
-                    token_ids=batch["token_ids"],
+                _, labels = masker.apply_mask(
+                    input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     special_tokens_mask=batch["special_tokens_mask"],
                 )
+                mask = labels != -100
 
                 special_mask = batch["special_tokens_mask"].bool()
                 maskable = batch["attention_mask"].bool() & ~special_mask
 
-                total_masked += mask_labels.sum().item()
+                total_masked += mask.sum().item()
                 total_maskable += maskable.sum().item()
 
             actual_rate = total_masked / total_maskable
@@ -1098,31 +1086,31 @@ class TestPredictMasked:
         """Test that predict_masked fills in MASK tokens."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=64,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.eval()
 
         # Create input with some MASK tokens
         batch_size, seq_len = 2, 32
-        token_ids = torch.randint(4, 28, (batch_size, seq_len))
-        token_ids[:, 0] = 0  # CLS
-        token_ids[:, -1] = 2  # EOS
+        input_ids = torch.randint(4, 28, (batch_size, seq_len))
+        input_ids[:, 0] = 0  # CLS
+        input_ids[:, -1] = 2  # EOS
 
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, seq_len // 2 :] = 1
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, seq_len // 2 :] = 1
 
         # Mask some positions
-        original_tokens = token_ids.clone()
+        original_tokens = input_ids.clone()
         mask_positions = torch.tensor([5, 6, 7, 10, 15])
-        token_ids[:, mask_positions] = 31  # MASK token ID
+        input_ids[:, mask_positions] = 31  # MASK token ID
 
         with torch.no_grad():
-            predicted = model.predict_masked(token_ids, chain_ids)
+            predicted = model.predict_masked(input_ids, token_type_ids=token_type_ids)
 
         # Check that masked positions are filled
         for pos in mask_positions:
@@ -1137,27 +1125,27 @@ class TestPredictMasked:
         """Test predict_masked with different temperature values."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=64,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.eval()
 
-        token_ids = torch.randint(4, 28, (1, 16))
-        token_ids[:, 5:10] = 31  # MASK
-        chain_ids = torch.zeros(1, 16, dtype=torch.long)
+        input_ids = torch.randint(4, 28, (1, 16))
+        input_ids[:, 5:10] = 31  # MASK
+        token_type_ids = torch.zeros(1, 16, dtype=torch.long)
 
         with torch.no_grad():
             # Low temperature
             predicted_low = model.predict_masked(
-                token_ids.clone(), chain_ids, temperature=0.1
+                input_ids.clone(), token_type_ids=token_type_ids, temperature=0.1
             )
             # High temperature
             predicted_high = model.predict_masked(
-                token_ids.clone(), chain_ids, temperature=2.0
+                input_ids.clone(), token_type_ids=token_type_ids, temperature=2.0
             )
 
         # Both should produce valid token IDs
@@ -1168,21 +1156,23 @@ class TestPredictMasked:
         """Test predict_masked with top-k filtering."""
         config = SomaticConfig(
             vocab_size=32,
-            d_model=64,
-            n_layers=2,
-            n_heads=2,
-            max_seq_len=64,
-            dropout=0.0,
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            max_position_embeddings=64,
+            hidden_dropout=0.0,
         )
-        model = SomaticModel(config)
+        model = SomaticForMaskedLM(config)
         model.eval()
 
-        token_ids = torch.randint(4, 28, (1, 16))
-        token_ids[:, 5:10] = 31  # MASK
-        chain_ids = torch.zeros(1, 16, dtype=torch.long)
+        input_ids = torch.randint(4, 28, (1, 16))
+        input_ids[:, 5:10] = 31  # MASK
+        token_type_ids = torch.zeros(1, 16, dtype=torch.long)
 
         with torch.no_grad():
-            predicted = model.predict_masked(token_ids.clone(), chain_ids, top_k=5)
+            predicted = model.predict_masked(
+                input_ids.clone(), token_type_ids=token_type_ids, top_k=5
+            )
 
         # Should produce valid token IDs
         assert (predicted >= 0).all() and (predicted < 32).all()

@@ -4,11 +4,11 @@ import pytest
 import torch
 
 from somatic.eval.regions import (
-    AntibodyRegion,
     CDR_REGIONS,
     FWR_REGIONS,
     HEAVY_REGIONS,
     LIGHT_REGIONS,
+    AntibodyRegion,
     aggregate_region_masks,
     extract_region_masks,
 )
@@ -20,10 +20,20 @@ class TestAntibodyRegion:
     def test_all_regions_exist(self):
         """Test that all expected regions are defined."""
         expected = [
-            "hcdr1", "hcdr2", "hcdr3",
-            "lcdr1", "lcdr2", "lcdr3",
-            "hfwr1", "hfwr2", "hfwr3", "hfwr4",
-            "lfwr1", "lfwr2", "lfwr3", "lfwr4",
+            "hcdr1",
+            "hcdr2",
+            "hcdr3",
+            "lcdr1",
+            "lcdr2",
+            "lcdr3",
+            "hfwr1",
+            "hfwr2",
+            "hfwr3",
+            "hfwr4",
+            "lfwr1",
+            "lfwr2",
+            "lfwr3",
+            "lfwr4",
         ]
         actual = [r.value for r in AntibodyRegion]
         assert set(expected) == set(actual)
@@ -82,7 +92,7 @@ class TestExtractRegionMasks:
         seq_len = 40
 
         # Token IDs (just placeholders)
-        token_ids = torch.randint(4, 24, (batch_size, seq_len))
+        input_ids = torch.randint(4, 24, (batch_size, seq_len))
 
         # Attention mask (all valid)
         attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
@@ -92,14 +102,14 @@ class TestExtractRegionMasks:
         special_tokens_mask[:, 0] = True
         special_tokens_mask[:, 39] = True
 
-        # Chain IDs: 0 for CLS + heavy, 1 for light + EOS
-        chain_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        chain_ids[:, 20:] = 1
+        # token_type_ids: 0 for CLS + heavy, 1 for light + EOS
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, 20:] = 1
 
         # Detailed CDR mask: 0=FWR, 1=CDR1, 2=CDR2, 3=CDR3
         cdr_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
         # Heavy chain CDRs
-        cdr_mask[:, 4:7] = 1    # HCDR1 (positions 4-6)
+        cdr_mask[:, 4:7] = 1  # HCDR1 (positions 4-6)
         cdr_mask[:, 10:13] = 2  # HCDR2 (positions 10-12)
         cdr_mask[:, 16:19] = 3  # HCDR3 (positions 16-18)
         # Light chain CDRs
@@ -108,10 +118,10 @@ class TestExtractRegionMasks:
         cdr_mask[:, 35:38] = 3  # LCDR3 (positions 35-37)
 
         return {
-            "token_ids": token_ids,
+            "input_ids": input_ids,
             "attention_mask": attention_mask,
             "special_tokens_mask": special_tokens_mask,
-            "chain_ids": chain_ids,
+            "token_type_ids": token_type_ids,
             "cdr_mask": cdr_mask,
         }
 
@@ -192,8 +202,8 @@ class TestExtractRegionMasks:
     def test_no_cdr_mask_raises_error(self):
         """Test that missing cdr_mask raises ValueError."""
         batch = {
-            "token_ids": torch.zeros(2, 10, dtype=torch.long),
-            "chain_ids": torch.zeros(2, 10, dtype=torch.long),
+            "input_ids": torch.zeros(2, 10, dtype=torch.long),
+            "token_type_ids": torch.zeros(2, 10, dtype=torch.long),
             "attention_mask": torch.ones(2, 10, dtype=torch.long),
         }
 
@@ -205,7 +215,7 @@ class TestExtractRegionMasks:
         region_masks = extract_region_masks(sample_batch)
 
         # All sequences in batch should have same regions
-        for region, mask in region_masks.items():
+        for _region, mask in region_masks.items():
             assert mask.shape[0] == 2  # batch_size
             # Both sequences should have same pattern
             assert torch.equal(mask[0], mask[1])
