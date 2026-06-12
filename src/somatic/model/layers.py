@@ -71,15 +71,20 @@ def _sac_policy_fn(ctx, op, *args, **kwargs):
 
 class TransformerBlock(nn.Module):
     """
-    Transformer block with configurable attention, normalization type, and placement.
+    Transformer block with configurable attention and normalization strategy.
 
-    Supports:
-    - Pre-norm: x = x + Sublayer(Norm(x))
-    - Post-norm: x = Norm(x + Sublayer(x))
-    - Both: x = Norm(x + Sublayer(Norm(x)))
-    - HybridNorm (Zhuo et al., arXiv 2503.04598): QKV-norm inside attention with
-      un-normalized residual; FFN uses Norm(x) as both FFN input and residual base
-    - LayerNorm or RMSNorm
+    The ``norm_strategy`` selects where normalization sits relative to each
+    sublayer and the residual:
+
+    - ``"pre"``: pre-norm, ``x = x + Sublayer(Norm(x))``.
+    - ``"sandwich"``: Sandwich-LN (Ding et al., arXiv:2105.13290),
+      ``x = x + Norm(Sublayer(Norm(x)))`` — a norm on the sublayer input and on
+      its output, both outside the residual stream.
+    - ``"hybrid"``: HybridNorm (Zhuo et al., arXiv:2503.04598) — QKV-norm inside
+      attention with no outer attention pre-norm, and ``Norm(h)`` reused as both
+      the FFN input and the FFN-side residual base.
+
+    Either LayerNorm or RMSNorm is used throughout, per ``norm_type``.
     """
 
     def __init__(
@@ -95,11 +100,8 @@ class TransformerBlock(nn.Module):
         use_chain_aware_attention: bool = True,
         chain_aware_projection_mode: str = "separate",
         norm_type: str = "layernorm",
-        pre_norm: bool = True,
-        post_norm: bool = False,
+        norm_strategy: str = "pre",
         qk_norm: str = "none",
-        hybrid_norm: bool = False,
-        hybrid_first_layer: bool = False,
         rope_fraction: float = 1.0,
     ) -> None:
         super().__init__()
@@ -109,35 +111,29 @@ class TransformerBlock(nn.Module):
         self.gradient_checkpointing = False
         self.gradient_checkpointing_mode = "full"  # "full" | "selective"
 
-        self.hybrid_norm = hybrid_norm
-        # HybridNorm* layer-0 path: Pre-Norm wiring on both sublayers, but the
-        # attention module still uses QKV-norm (since hybrid_norm is forwarded to it)
-        self.hybrid_first_layer = hybrid_norm and hybrid_first_layer
-        # Pre/post-norm at the block level are ignored in HybridNorm mode, except
-        # the * variant's first layer uses Pre-Norm wiring on both sublayers
-        self.pre_norm = (pre_norm and not hybrid_norm) or self.hybrid_first_layer
-        self.post_norm = post_norm and not hybrid_norm
+        if norm_strategy not in ("pre", "hybrid", "sandwich"):
+            raise ValueError(
+                f"Unknown norm_strategy {norm_strategy!r}; "
+                "expected one of 'pre', 'hybrid', 'sandwich'."
+            )
+        self.norm_strategy = norm_strategy
+        hybrid = norm_strategy == "hybrid"
 
-        self.attention_pre_norm: nn.Module | None = None
-        self.ffn_pre_norm: nn.Module | None = None
-        self.attention_post_norm: nn.Module | None = None
+        # Attention pre-norm: present under every strategy except hybrid (which
+        # normalizes Q/K/V inside attention instead of the attention input).
+        self.attn_norm: nn.Module | None = None
+        if not hybrid:
+            self.attn_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
+
+        # FFN pre-norm: always present.
+        self.ffn_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
+
+        # Sandwich post-norms: applied to each sublayer output, outside the residual.
+        self.attn_post_norm: nn.Module | None = None
         self.ffn_post_norm: nn.Module | None = None
-        self.ffn_norm: nn.Module | None = None
-
-        if self.hybrid_first_layer:
-            # Pre-Norm layout for layer 0 of HybridNorm*; QKV-norm still applied inside attention
-            self.attention_pre_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-            self.ffn_pre_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-        elif hybrid_norm:
-            # Single norm reused for both the FFN input and the FFN residual base
-            self.ffn_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-        else:
-            if pre_norm:
-                self.attention_pre_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-                self.ffn_pre_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-            if post_norm:
-                self.attention_post_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
-                self.ffn_post_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
+        if norm_strategy == "sandwich":
+            self.attn_post_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
+            self.ffn_post_norm = create_norm_layer(norm_type, d_model, layer_norm_eps)
 
         # Select attention type based on config
         if not use_chain_aware_attention:
@@ -159,7 +155,7 @@ class TransformerBlock(nn.Module):
             qk_norm=qk_norm,
             norm_type=norm_type,
             layer_norm_eps=layer_norm_eps,
-            hybrid_norm=hybrid_norm,
+            hybrid_norm=hybrid,
             rope_fraction=rope_fraction,
         )
 
@@ -235,40 +231,39 @@ class TransformerBlock(nn.Module):
                 Tuple of (output, attn_weights) where attn_weights has shape
                 (batch, n_heads, seq_len, seq_len)
         """
-        # Attention sublayer: input is un-normalized in HybridNorm mode; the
-        # attention module applies QKV-norm internally
-        residual = x
-        if self.pre_norm and self.attention_pre_norm is not None:
-            x = self.attention_pre_norm(x)
+        # Attention sublayer. Hybrid feeds the raw residual stream (QKV-norm lives
+        # inside the attention module); pre/sandwich apply the outer pre-norm.
+        if self.norm_strategy == "hybrid":
+            attn_base = x
+        else:
+            assert self.attn_norm is not None
+            attn_base = self.attn_norm(x)
 
         if output_attentions:
             attn_out, attn_weights = self.attention(
-                x, token_type_ids, attention_mask, need_weights=True
+                attn_base, token_type_ids, attention_mask, need_weights=True
             )
         else:
-            attn_out = self.attention(x, token_type_ids, attention_mask, need_weights=False)
+            attn_out = self.attention(attn_base, token_type_ids, attention_mask, need_weights=False)
 
-        x = residual + self.dropout(attn_out)
+        # Sandwich: post-norm the attention output before the residual add.
+        if self.norm_strategy == "sandwich":
+            assert self.attn_post_norm is not None
+            attn_out = self.attn_post_norm(attn_out)
+        h = x + self.dropout(attn_out)
 
-        if self.post_norm and self.attention_post_norm is not None:
-            x = self.attention_post_norm(x)
-
-        # FFN sublayer. HybridNorm* layer 0 falls through to the Pre-Norm branch.
-        if self.hybrid_norm and not self.hybrid_first_layer:
-            assert self.ffn_norm is not None
-            normed = self.ffn_norm(x)
-            ffn_out = self.ffn(normed)
-            x = normed + self.dropout(ffn_out)
-        else:
-            residual = x
-            if self.pre_norm and self.ffn_pre_norm is not None:
-                x = self.ffn_pre_norm(x)
-
-            ffn_out = self.ffn(x)
-            x = residual + self.dropout(ffn_out)
-
-            if self.post_norm and self.ffn_post_norm is not None:
-                x = self.ffn_post_norm(x)
+        # FFN sublayer.
+        h_norm = self.ffn_norm(h)
+        ffn_out = self.ffn(h_norm)
+        if self.norm_strategy == "sandwich":
+            assert self.ffn_post_norm is not None
+            ffn_out = self.ffn_post_norm(ffn_out)
+            x = h + self.dropout(ffn_out)
+        elif self.norm_strategy == "hybrid":
+            # Norm(h) is reused as both the FFN input and the FFN-side residual base.
+            x = h_norm + self.dropout(ffn_out)
+        else:  # "pre"
+            x = h + self.dropout(ffn_out)
 
         if output_attentions:
             return x, attn_weights
@@ -295,16 +290,12 @@ class TransformerEncoder(nn.Module):
         use_chain_aware_attention: bool = True,
         chain_aware_projection_mode: str = "separate",
         norm_type: str = "layernorm",
-        pre_norm: bool = True,
-        post_norm: bool = False,
+        norm_strategy: str = "pre",
         qk_norm: str = "none",
         layer_norm_eps: float = 1e-6,
-        hybrid_norm: str = "none",
         rope_fraction: float = 1.0,
     ) -> None:
         super().__init__()
-
-        hybrid_norm_enabled = hybrid_norm != "none"
 
         self.layers = nn.ModuleList(
             [
@@ -320,14 +311,11 @@ class TransformerEncoder(nn.Module):
                     use_chain_aware_attention=use_chain_aware_attention,
                     chain_aware_projection_mode=chain_aware_projection_mode,
                     norm_type=norm_type,
-                    pre_norm=pre_norm,
-                    post_norm=post_norm,
+                    norm_strategy=norm_strategy,
                     qk_norm=qk_norm,
-                    hybrid_norm=hybrid_norm_enabled,
-                    hybrid_first_layer=(hybrid_norm == "star" and i == 0),
                     rope_fraction=rope_fraction,
                 )
-                for i in range(n_layers)
+                for _ in range(n_layers)
             ]
         )
 

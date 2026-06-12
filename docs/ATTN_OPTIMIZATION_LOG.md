@@ -24,7 +24,7 @@ results for the chain-aware attention ablation described in
   separate-QKV and shared-QKV chain-aware modules.
 - Added `chain_aware_projection_mode` to `SomaticConfig` with values
   `"separate"` (default) and `"shared"`. Validation is unconditional, and the
-  combination `shared` + `hybrid_norm != "none"` is rejected.
+  combination `shared` + `norm_strategy == "hybrid"` is rejected.
 - Threaded the new config through `SomaticModel`, `TransformerEncoder`,
   `TransformerBlock`, the `somatic` CLI (`model-size`), and the train CLI.
   Older checkpoints/configs without the field default to `"separate"` via the
