@@ -167,7 +167,7 @@ def model_size(
 
         somatic model-size model=small
 
-        somatic model-size model=large model.n_layers=32
+        somatic model-size model=large model.num_hidden_layers=32
     """
     import importlib.resources
     from contextlib import ExitStack

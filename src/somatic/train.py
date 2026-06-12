@@ -116,31 +116,11 @@ def _validate_mixed_precision(value: str) -> None:
 def _build_model_config(model_cfg: DictConfig) -> SomaticConfig:
     """Build a ``SomaticConfig`` from the Hydra ``model:`` block.
 
-    Maps the Hydra keys onto HuggingFace-canonical ``SomaticConfig`` field names.
+    The ``model:`` keys are the HuggingFace-canonical ``SomaticConfig`` field
+    names, so the resolved block splats straight onto the constructor.
     """
-    return SomaticConfig(
-        vocab_size=model_cfg.vocab_size,
-        hidden_size=model_cfg.d_model,
-        num_hidden_layers=model_cfg.n_layers,
-        num_attention_heads=model_cfg.n_heads,
-        intermediate_size=model_cfg.d_ffn,
-        ffn_multiplier=model_cfg.ffn_multiplier,
-        max_position_embeddings=model_cfg.max_seq_len,
-        rope_fraction=model_cfg.rope_fraction,
-        hidden_dropout=model_cfg.dropout,
-        attention_dropout=model_cfg.attention_dropout,
-        use_chain_aware_attention=model_cfg.use_chain_aware_attention,
-        chain_aware_projection_mode=model_cfg.get("chain_aware_projection_mode", "separate"),
-        norm_type=model_cfg.norm_type,
-        pre_norm=model_cfg.pre_norm,
-        post_norm=model_cfg.post_norm,
-        qk_norm=model_cfg.qk_norm,
-        norm_eps=model_cfg.layer_norm_eps,
-        hybrid_norm=model_cfg.hybrid_norm,
-        gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
-        gradient_checkpointing_mode=model_cfg.get("gradient_checkpointing_mode", "full"),
-        pad_token_id=model_cfg.get("padding_idx", 1),
-    )
+    fields = cast("dict[str, Any]", OmegaConf.to_container(model_cfg, resolve=True))
+    return SomaticConfig(**fields)
 
 
 def _build_masking_frequency_config(cfg: DictConfig) -> MaskingFrequencyConfig:

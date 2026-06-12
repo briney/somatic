@@ -402,12 +402,27 @@ Files: `training/trainer.py`, `training/checkpoint.py`, `training/metrics.py`,
 
 ## Phase 10 — Hydra configs (`configs/model/*.yaml`)
 
-- [ ] Rename keys to HF canonical names in `small.yaml`, `base.yaml`,
-      `large.yaml`, `xlarge.yaml` (`hidden_size`, `num_hidden_layers`,
-      `num_attention_heads`, `intermediate_size`, `max_position_embeddings`,
-      `hidden_dropout`, `attention_dropout`, `norm_eps`, ...).
-- [ ] Hydra still orchestrates training (data/train/log/eval blocks unchanged);
-      only the `model:` block field names change to feed `SomaticConfig`.
+- [x] Renamed keys to HF canonical names in `small.yaml`, `base.yaml`,
+      `large.yaml`, `xlarge.yaml`: `d_model`→`hidden_size`,
+      `n_layers`→`num_hidden_layers`, `n_heads`→`num_attention_heads`,
+      `d_ffn`→`intermediate_size`, `max_seq_len`→`max_position_embeddings`,
+      `layer_norm_eps`→`norm_eps`, `padding_idx`→`pad_token_id`. Consolidated
+      `dropout` + `embedding_dropout` → a single `hidden_dropout` (the old
+      `embedding_dropout` was already unread). Updated the commented
+      alternative-shape blocks too. `configs/README.md` model tables + examples
+      updated to match.
+- [x] Hydra still orchestrates training (data/train/log/eval blocks unchanged);
+      only the `model:` block field names changed.
+- [x] Simplified `train.py::_build_model_config` to splat the resolved HF-named
+      `model:` block straight onto `SomaticConfig` (shared by `cli.py model-size`).
+      Updated `eval/registry.py` to read `num_hidden_layers` (was `n_layers`) for
+      the `p_at_l` default, and the `cli.py model-size` docstring example.
+- [x] Verified: `somatic model-size` for all four variants reports the expected
+      param counts (24M / 141M / 648M / 1.2B); a 2-step `somatic train` smoke test
+      against the toy CSV ran train + eval + region eval with no shape/config
+      errors, wrote an HF checkpoint dir (config.json + safetensors + tokenizer +
+      bundled custom-code), and that dir reloads via
+      `SomaticForMaskedLM.from_pretrained`. ruff/ty clean.
 
 ## Phase 11 — Tests (`tests/`)
 
