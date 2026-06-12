@@ -186,11 +186,9 @@ class SomaticModel(SomaticPreTrainedModel):
             use_chain_aware_attention=config.use_chain_aware_attention,
             chain_aware_projection_mode=config.chain_aware_projection_mode,
             norm_type=config.norm_type,
-            pre_norm=config.pre_norm,
-            post_norm=config.post_norm,
+            norm_strategy=config.norm_strategy,
             qk_norm=config.qk_norm,
             layer_norm_eps=config.norm_eps,
-            hybrid_norm=config.hybrid_norm,
             rope_fraction=config.rope_fraction,
         )
 

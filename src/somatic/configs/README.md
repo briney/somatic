@@ -102,9 +102,8 @@ Three model size variants are available: `small`, `base` (default), and `large`.
 | `use_chain_aware_attention` | bool | `true` | Enable chain-aware (MINT-style) attention |
 | `chain_aware_projection_mode` | string | `separate` | Chain-aware projection variant: `separate` (Q/K/V per self/cross path) or `shared` (single Q/K/V). Ignored when `use_chain_aware_attention=false`. |
 | `norm_type` | string | `layernorm` | Normalization type: `layernorm` \| `rmsnorm` |
-| `pre_norm` | bool | `true` | Use pre-normalization (recommended) |
-| `post_norm` | bool | `false` | Use post-normalization |
-| `qk_norm` | string | `none` | QK normalization: `none` \| `norm` \| `learned_scale` |
+| `norm_strategy` | string | `pre` | Normalization placement: `pre` (pre-norm), `hybrid` (HybridNorm; QKV-norm in attention + reused FFN pre-norm), or `sandwich` (Sandwich-LN; norm before and after each sublayer, outside the residual) |
+| `qk_norm` | string | `none` | QK normalization: `none` \| `norm` \| `learned_scale`. Ignored when `norm_strategy=hybrid` (QKV-norm replaces it) |
 | `norm_eps` | float | `1e-6` | Normalization epsilon value |
 
 ### Usage Examples

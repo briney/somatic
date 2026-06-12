@@ -59,7 +59,7 @@ class BaseAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-        # QK normalization is disabled in hybrid_norm mode (subclasses build QKV norm instead)
+        # QK normalization is disabled under the hybrid strategy (subclasses build QKV norm instead)
         if hybrid_norm:
             self.qk_norm_module = None
         else:
@@ -464,8 +464,8 @@ class SharedQKVChainAwareAttention(BaseAttention):
     ) -> None:
         if hybrid_norm:
             raise ValueError(
-                "SharedQKVChainAwareAttention does not support HybridNorm. "
-                "Set hybrid_norm='none' or use chain_aware_projection_mode='separate'."
+                "SharedQKVChainAwareAttention does not support the hybrid norm strategy. "
+                "Use a different norm_strategy or chain_aware_projection_mode='separate'."
             )
         super().__init__(
             d_model,

@@ -28,11 +28,9 @@ chain_aware_projection_mode: separate
 
 # Normalization options
 norm_type: layernorm # "layernorm" or "rmsnorm"
-pre_norm: true
-post_norm: false
-qk_norm: none # "none", "norm", or "learned_scale"
+norm_strategy: pre # "pre", "hybrid" (Zhuo et al., 2025), or "sandwich" (Ding et al., 2021)
+qk_norm: none # "none", "norm", or "learned_scale"; ignored when norm_strategy: hybrid
 norm_eps: 1e-6
-hybrid_norm: "none" # "none", "standard", or "star"; non-"none" overrides pre/post/qk_norm (Zhuo et al., 2025)
 
 # Gradient (activation) checkpointing: trades compute for activation memory.
 gradient_checkpointing: false

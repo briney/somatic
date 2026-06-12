@@ -100,7 +100,7 @@ Validation rules:
 - Keep `"separate"` as the default so older saved configs and existing training behavior remain
   compatible.
 - If `use_chain_aware_attention=false`, ignore `chain_aware_projection_mode` during dispatch.
-- If `chain_aware_projection_mode="shared"` and `hybrid_norm != "none"`, raise a clear
+- If `chain_aware_projection_mode="shared"` and `norm_strategy == "hybrid"`, raise a clear
   `ValueError` explaining that shared-QKV chain-aware attention does not support HybridNorm yet.
 
 Checkpoint compatibility:
@@ -449,7 +449,7 @@ Required cases:
 - `use_chain_aware_attention=true` and `chain_aware_projection_mode="shared"` instantiates
   `SharedQKVChainAwareAttention`.
 - Invalid projection mode raises `ValueError`.
-- `chain_aware_projection_mode="shared"` with `hybrid_norm != "none"` raises `ValueError`.
+- `chain_aware_projection_mode="shared"` with `norm_strategy == "hybrid"` raises `ValueError`.
 - Save/load roundtrip preserves `chain_aware_projection_mode="shared"`.
 
 ### Training Smoke Test
@@ -653,7 +653,7 @@ separately to RoPE/no-position views.
 
 Mitigation:
 
-- Reject `chain_aware_projection_mode="shared"` with `hybrid_norm != "none"` in the first pass.
+- Reject `chain_aware_projection_mode="shared"` with `norm_strategy == "hybrid"` in the first pass.
 - Add HybridNorm support only after the base ablation has value.
 
 ### Risk: Parameter-Matched Baseline Changes Head Dimension

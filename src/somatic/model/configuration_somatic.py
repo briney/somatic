@@ -11,7 +11,7 @@ __all__ = ["SomaticConfig"]
 
 _VALID_NORM_TYPES = ("layernorm", "rmsnorm")
 _VALID_QK_NORM_MODES = ("none", "norm", "learned_scale")
-_VALID_HYBRID_NORMS = ("none", "standard", "star")
+_VALID_NORM_STRATEGIES = ("pre", "hybrid", "sandwich")
 _VALID_GRADIENT_CHECKPOINTING_MODES = ("full", "selective")
 _VALID_CHAIN_AWARE_PROJECTION_MODES = ("separate", "shared")
 _VALID_CLASSIFIER_POOLS = ("mean", "cls")
@@ -25,8 +25,19 @@ class SomaticConfig(PretrainedConfig):
     Maps 1:1 to the `model:` block of the project YAML schema and to the
     constructor kwargs of every `Somatic*` class. Field names follow the
     HuggingFace canonical convention (`hidden_size`, `num_hidden_layers`, ...);
-    Somatic-specific knobs (chain-aware attention, HybridNorm, RoPE fraction)
-    keep their original names.
+    Somatic-specific knobs (chain-aware attention, normalization strategy,
+    RoPE fraction) keep their original names.
+
+    Normalization is selected by a single `norm_strategy` field:
+
+    - ``"pre"``: standard pre-norm, ``x = x + Sublayer(Norm(x))``.
+    - ``"sandwich"``: Sandwich-LN (Ding et al., arXiv:2105.13290),
+      ``x = x + Norm(Sublayer(Norm(x)))`` — a norm on the sublayer input and on
+      its output, both outside the residual stream.
+    - ``"hybrid"``: HybridNorm (Zhuo et al., arXiv:2503.04598) — QKV-norm inside
+      attention (no outer attention pre-norm) plus ``Norm(h)`` reused as both the
+      FFN input and the FFN-side residual base. Under this strategy `qk_norm` is
+      ignored (QKV-norm replaces it).
     """
 
     model_type = "somatic"
@@ -48,11 +59,9 @@ class SomaticConfig(PretrainedConfig):
         use_chain_aware_attention: bool = True,
         chain_aware_projection_mode: str = "separate",
         norm_type: str = "layernorm",
-        pre_norm: bool = True,
-        post_norm: bool = False,
+        norm_strategy: str = "pre",
         qk_norm: str = "none",
         norm_eps: float = 1e-6,
-        hybrid_norm: str = "none",
         gradient_checkpointing: bool = False,
         gradient_checkpointing_mode: str = "full",
         initializer_range: float = 0.02,
@@ -84,11 +93,9 @@ class SomaticConfig(PretrainedConfig):
         self.use_chain_aware_attention = bool(use_chain_aware_attention)
         self.chain_aware_projection_mode = chain_aware_projection_mode
         self.norm_type = norm_type
-        self.pre_norm = bool(pre_norm)
-        self.post_norm = bool(post_norm)
+        self.norm_strategy = norm_strategy
         self.qk_norm = qk_norm
         self.norm_eps = float(norm_eps)
-        self.hybrid_norm = hybrid_norm
         self.gradient_checkpointing = bool(gradient_checkpointing)
         self.gradient_checkpointing_mode = str(gradient_checkpointing_mode)
         self.initializer_range = float(initializer_range)
@@ -158,9 +165,14 @@ class SomaticConfig(PretrainedConfig):
             raise ValueError(
                 f"norm_type must be one of {_VALID_NORM_TYPES}; got {self.norm_type!r}."
             )
-        if self.hybrid_norm not in _VALID_HYBRID_NORMS:
+        if self.norm_strategy not in _VALID_NORM_STRATEGIES:
             raise ValueError(
-                f"hybrid_norm must be one of {_VALID_HYBRID_NORMS}; got {self.hybrid_norm!r}."
+                f"norm_strategy must be one of {_VALID_NORM_STRATEGIES}; "
+                f"got {self.norm_strategy!r}."
+            )
+        if self.qk_norm not in _VALID_QK_NORM_MODES:
+            raise ValueError(
+                f"qk_norm must be one of {_VALID_QK_NORM_MODES}; got {self.qk_norm!r}."
             )
         if self.gradient_checkpointing_mode not in _VALID_GRADIENT_CHECKPOINTING_MODES:
             raise ValueError(
@@ -179,24 +191,14 @@ class SomaticConfig(PretrainedConfig):
                 f"got {self.classifier_pool!r}."
             )
 
-        # Shared-QKV chain-aware attention does not yet support HybridNorm.
+        # Shared-QKV chain-aware attention does not yet support the hybrid strategy.
         if (
             self.use_chain_aware_attention
             and self.chain_aware_projection_mode == "shared"
-            and self.hybrid_norm != "none"
+            and self.norm_strategy == "hybrid"
         ):
             raise ValueError(
                 "chain_aware_projection_mode='shared' is not compatible with "
-                f"hybrid_norm='{self.hybrid_norm}'. Use hybrid_norm='none' or "
+                "norm_strategy='hybrid'. Use a different norm_strategy or "
                 "chain_aware_projection_mode='separate'."
             )
-
-        # pre_norm/post_norm/qk_norm are inert when hybrid_norm is enabled, so
-        # only validate them when HybridNorm is disabled.
-        if self.hybrid_norm == "none":
-            if not self.pre_norm and not self.post_norm:
-                raise ValueError("At least one of pre_norm or post_norm must be True.")
-            if self.qk_norm not in _VALID_QK_NORM_MODES:
-                raise ValueError(
-                    f"qk_norm must be one of {_VALID_QK_NORM_MODES}; got {self.qk_norm!r}."
-                )

@@ -595,7 +595,7 @@ class TestSharedQKVChainAwareAttention:
         assert torch.allclose(out1, out2)
 
     def test_hybrid_norm_rejected(self):
-        with pytest.raises(ValueError, match="HybridNorm"):
+        with pytest.raises(ValueError, match="hybrid norm strategy"):
             SharedQKVChainAwareAttention(
                 d_model=64,
                 n_heads=4,
@@ -708,7 +708,7 @@ class TestSharedQKVConfig:
 
     def test_shared_with_hybrid_norm_raises(self):
         with pytest.raises(ValueError, match="shared"):
-            SomaticConfig(chain_aware_projection_mode="shared", hybrid_norm="standard")
+            SomaticConfig(chain_aware_projection_mode="shared", norm_strategy="hybrid")
 
     def test_shared_without_chain_aware_does_not_raise(self):
         # Mode is ignored when chain-aware attention is disabled.
